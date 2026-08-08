@@ -56,6 +56,14 @@ pip install -r requirements.txt
 Si falta alguna de las 3 obligatorias, el servidor no arranca y lo dice
 explícitamente (no hay fallback silencioso a valores de `psycopg2`).
 
+> **Historial**: el 2026-08-08 existió brevemente un `DB_ALLOW_WRITABLE_ROLE`
+> como escape hatch para poder arrancar contra dev antes de tener el rol
+> read-only dedicado (`langdev`, el rol usado hasta entonces, es dueño de
+> tablas y superuser). Se sacó el mismo día al crear `mcp_popey_ro` — ver
+> [creación del rol read-only](#creación-del-rol-read-only-mcp_popey_ro) más
+> abajo. El chequeo de rol no tiene bypass hoy: si el rol conectado tiene
+> cualquier permiso de escritura, el servidor aborta, sin excepciones.
+
 ## Correr el servidor
 
 ```bash
@@ -131,6 +139,33 @@ verifica el rol contra Postgres (superusuario, GRANT de escritura propio o
 de `PUBLIC`, ownership de alguna tabla, o `CREATE` sobre algún schema) y, si
 encuentra cualquier permiso de escritura o DDL, **loguea `CRITICAL` y aborta
 el arranque** — no levanta el servidor con la barrera primaria comprometida.
+No hay forma de saltear este chequeo desde configuración (ver historial de
+`DB_ALLOW_WRITABLE_ROLE` arriba).
+
+#### Creación del rol read-only (`mcp_popey_ro`)
+
+En el entorno de dev actual, Postgres corre en un contenedor Docker
+(`lang_docker_database_1`) **sin volumen persistente**: cada vez que se
+recrea el contenedor, se pierde el cluster entero, rol incluido. Por eso el
+rol read-only se recrea con un script versionado en vez de dejarlo como
+comandos sueltos:
+
+```bash
+docker cp scripts/create_readonly_role.sql lang_docker_database_1:/tmp/
+docker exec -it lang_docker_database_1 \
+  psql -U langdev -d langdev -v ON_ERROR_STOP=1 \
+  -v ro_password='<elegir una password>' \
+  -f /tmp/create_readonly_role.sql
+```
+
+Crea (o actualiza la password de) el rol `mcp_popey_ro` con `GRANT SELECT`
+únicamente sobre los schemas que aparecen en `config/circuits.yaml`
+(`administracion`, `compra`, `e_plataforma`, `mercado_libre`, `public`,
+`servicio_tecnico`, `stock`, `util`, `venta`) — no sobre todos los schemas
+de la base. Si `circuits.yaml` suma un circuito en un schema nuevo, hay que
+agregar ese schema a `scripts/create_readonly_role.sql` y volver a correrlo
+(los `GRANT` son idempotentes). Después de correrlo, poner
+`PGUSER=mcp_popey_ro` y esa misma password en `PGPASSWORD` del `.env`.
 
 ### 2. La guarda de código (segunda capa, defensa en profundidad)
 

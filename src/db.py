@@ -16,6 +16,12 @@ real del rol conectado contra Postgres (ver `_check_read_only_role`) y, si
 detecta cualquier permiso de escritura/DDL, aborta el arranque — decisión
 explícita: si la barrera "primaria" está comprometida, la guarda de código
 de acá pasa a ser la única protección real, y eso no debe pasar en silencio.
+No hay bypass de este chequeo: existió brevemente un escape hatch
+(`DB_ALLOW_WRITABLE_ROLE`, agregado el 2026-08-08 para poder arrancar contra
+dev antes de tener el rol read-only dedicado) y se sacó el mismo día al
+crear `mcp_popey_ro` (ver `scripts/create_readonly_role.sql`) — dejarlo
+disponible era tentador precisamente en el entorno donde importa que el
+chequeo no se pueda saltear.
 """
 
 from __future__ import annotations
@@ -25,6 +31,9 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import psycopg2
 import psycopg2.extras
