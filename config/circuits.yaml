@@ -1,0 +1,620 @@
+# Circuitos de negocio del ERP Popey.
+# Generado a partir de Popey-ERP/docs/*.md (2026-08-07/08).
+# Cada circuito agrupa uno o más .md que describen el MISMO flujo desde
+# distintas capas (backend, formulario, servicio) para no duplicar
+# responsabilidad entre circuitos.
+#
+# `tables`: inventario de tablas/vistas PostgreSQL afectadas por cada circuito.
+# Varios .md narran el mismo circuito en fechas distintas y a veces se
+# contradicen en columnas (ej. venta.nota_pedido_item creció con el tiempo).
+# Cuando hubo conflicto se resolvió por antigüedad real del esquema, NO por
+# fecha de redacción del .md, con esta prioridad (de más a menos autoritativo):
+#   1. db/inc/<último NNN>_vX.Y.Z.sql   → migración pendiente más reciente
+#      (multi-ALTER acumulativo; si una tabla/vista se redefine varias veces
+#      en el mismo archivo, gana la ÚLTIMA definición del archivo).
+#   2. docs/diagramas/*_ddl.sql          → introspección directa de la base
+#      viva (\d / pg_get_viewdef), declarada explícitamente "fuente de verdad"
+#      en su propio encabezado.
+#   3. docs/*.dbml                       → ERD también introspectado, pero de
+#      fecha anterior a los *_ddl.sql (puede estar un paso atrás).
+#   4. db/deployed/*.sql y db/initial/schema_*.sql → historial ya aplicado a
+#      producción; solo se usan si nada de lo anterior cubre la tabla.
+#   5. Los .md narrativos                → mejor fuente de INTENCIÓN/negocio,
+#      pero sus tablas de columnas pueden quedar desactualizadas apenas se
+#      suma una columna nueva (varios .md lo advierten explícitamente).
+# `source` en cada tabla indica de dónde salieron las columnas listadas.
+
+circuits:
+  venta:
+    description: "circuito comercial de venta: reserva de stock, Nota de Pedido, Presupuesto/Carrito, Factura de Venta, Remito de Venta y Nota de Crédito de Venta (incluye alta rápida de cliente desde el formulario de facturación)"
+    docs:
+      - Popey-ERP/docs/circuito_venta.md
+      - Popey-ERP/docs/CIRCUITO_NP_REMITO_FACTURA.md
+      - Popey-ERP/docs/PRESUPUESTO_FACTURA_VENTA.md
+      - Popey-ERP/docs/CARRITO_SERVICE.md
+      - Popey-ERP/docs/FACTURA_VENTA_SERVICE.md
+      - Popey-ERP/docs/ALTA_CLIENTE_MODAL_FACTURA.md
+    tables:
+      # --- Reserva de stock (previa a Nota de Pedido) ---
+      - table: venta.reserva_articulo
+        role: "Cabecera de reserva: aparta stock de un depósito para un comprobante hasta que se libera o se concreta en factura"
+        key_columns: [nreservaarticulo, dfecha, nusuarioreserva, nsucursal, tsfechaexpiracion, norigen, tnota, bhabilitado]
+        source: "circuito_venta.md §1.2 (sin contradicción con SQL más nuevo)"
+      - table: venta.articuloxreserva_articulo
+        role: "Ítems de la reserva: un registro por artículo apartado con su cantidad; los triggers acumulan dcantidadreservada en stock.articuloxdeposito"
+        key_columns: [narticuloxreservaarticulo, nreservaarticulo, narticulo, ncantidad, nsucursal, bhabilitado, varticulo, vcodeart]
+        source: "circuito_venta.md §1.4"
+      - table: venta.articuloxreserva_combo
+        role: "Un registro por componente de combo cuando se reserva un artículo tipo combo (ntipostock=7)"
+        key_columns: ["columnas no confirmadas en la documentación disponible — se infiere nreservaarticulo/narticulo/ncantidad por analogía con articuloxreserva_articulo"]
+        source: "circuito_venta.md §1.5 (mención sin DDL detallado)"
+      - table: venta.reserva_origen
+        role: "Catálogo de canales que originan una reserva (Local, Ecommerce, MercadoLibre, Nota de Pedido, Factura de Venta)"
+        key_columns: [norigen, vorigen]
+        source: "circuito_venta.md §1.3"
+      - table: venta.reserva_nota_pedido
+        role: "Vínculo N:M entre una reserva y la Nota de Pedido que la originó/consume"
+        key_columns: [nreservanotapedido, nreservaarticulo, nnotapedido]
+        source: "circuito_venta.md §4"
+
+      # --- Nota de Pedido (hub del circuito) ---
+      - table: venta.nota_pedido
+        role: "Cabecera de Nota de Pedido: compromiso de venta antes de remitir/facturar; hub entre Remito y Factura de Venta"
+        key_columns: [nnotapedido, ncliente, ndeposito, nlistaprecio, nrazonsocial, vnumero, nestadonotapedido, nestadonotapedidoremito, nestadonotapedidofactura, ftotal, fiva, fdescuento, nfacturaventa]
+        source: "CONFLICTO resuelto: circuito_venta.md §4 no incluye nestadonotapedidoremito/nestadonotapedidofactura (agregados después). Autoritativo: docs/diagramas/carrito_ddl.sql (2026-08-04) + db/inc/009_v1.8.0.sql líneas 259-286 (2026-08-07, agrega los 2 catálogos de estado parcial)"
+      - table: venta.nota_pedido_item
+        role: "Ítems de la NP, con saldos acumulados de cuánto ya se remitió/facturó por renglón (trazabilidad parcial)"
+        key_columns: [nitem, nnotapedido, narticulo, ncantidad, fprecionunitario, ftotal, ndescuento, nejemplar, ncantidadremitida, ncantidadfacturada, nofertaxarticuloxlistadeprecio, ncantidadenoferta, fvaloroferta]
+        source: "CONFLICTO resuelto: circuito_venta.md §4 documenta solo la versión original (sin nejemplar/ncantidadremitida/ncantidadfacturada/columnas de oferta, y ndescuento como integer). Autoritativo: db/inc/009_v1.8.0.sql (última versión en el archivo, línea ~1473-1477; ndescuento pasado a numeric(5,2) en línea 1535, 2026-08-07) — más nuevo que carrito_ddl.sql (2026-08-04) y que erd_nota_pedido_remito_factura.dbml (2026-07-23, el más desactualizado de los tres)"
+      - table: venta.nota_pedido_item_combo
+        role: "Componentes de combo de un ítem de NP (mismo patrón que stock.remitoxitemcombo): snapshot de artículo + ejemplar puntual del componente"
+        key_columns: [nitemcombo, nitem, nnotapedido, narticulo, ncantidad, varticulo, vcodeart, nejemplar]
+        source: "db/inc/009_v1.8.0.sql líneas 1388-1402 (2026-08-07) — tabla nueva, sin mención en los .md narrativos"
+      - table: venta.estados_nota_pedido
+        role: "Catálogo de estados de la NP (Abierta, Cancelado, Facturado)"
+        key_columns: [nestadonotapedido, vestadonotapedido]
+        source: "circuito_venta.md §4"
+      - table: venta.estado_nota_pedido_remito
+        role: "Catálogo del estado parcial de remisión de la NP (sin remito / remito parcial / remito completo)"
+        key_columns: [nestadonotapedidoremito, vestadonotapedidoremito, bhabilitado]
+        source: "db/inc/009_v1.8.0.sql líneas 259-267 (2026-08-07) — no existe en circuito_venta.md, documentado narrativamente en CIRCUITO_NP_REMITO_FACTURA.md"
+      - table: venta.estado_nota_pedido_factura
+        role: "Catálogo del estado parcial de facturación de la NP (sin factura / factura parcial / factura completa)"
+        key_columns: [nestadonotapedidofactura, vestadonotapedidofactura, bhabilitado]
+        source: "db/inc/009_v1.8.0.sql líneas 269-277 (2026-08-07)"
+      - table: venta.relacion_remitos_notas_pedido
+        role: "Relación N:M a nivel cabecera entre NP y Remito de Venta (espeja compra.relacion_remitos_ordenes)"
+        key_columns: [nrelacionremitosnotaspedido, nnotapedido, nremito]
+        source: "db/inc/009_v1.8.0.sql líneas 100-108; confirmado también en erd_nota_pedido_remito_factura.dbml"
+      - table: venta.relacion_facturas_notas_pedido
+        role: "Relación N:M a nivel cabecera entre NP y Factura de Venta (espeja compra.relacion_facturas_ordenes)"
+        key_columns: [nrelacionfacturasnotaspedido, nnotapedido, nfacturaventa]
+        source: "db/inc/009_v1.8.0.sql líneas 109-118; confirmado también en erd_nota_pedido_remito_factura.dbml"
+      - table: venta.relacion_remitoxitem_notapedidoitem
+        role: "Trazabilidad ítem a ítem: cuánto de un ítem de NP salió por un ítem de Remito puntual (permite calcular saldo pendiente real)"
+        key_columns: [nrelacionremitoxitemnotapedidoitem, nitemremito, nitemnotapedido, ncantidad]
+        source: "db/inc/009_v1.8.0.sql líneas 1414-1422 (2026-08-07) — tabla nueva del ticket CIRCUITO_NP_REMITO_FACTURA, no existía en el dbml del 2026-07-23"
+      - table: venta.relacion_facturaxitem_notapedidoitem
+        role: "Trazabilidad ítem a ítem: cuánto de un ítem de NP se facturó en un ítem de Factura de Venta puntual"
+        key_columns: [nrelacionfacturaxitemnotapedidoitem, nfacturaventaxitem, nitemnotapedido, ncantidad]
+        source: "db/inc/009_v1.8.0.sql líneas 1424-1432, confirmado en docs/diagramas/carrito_ddl.sql (2026-08-04)"
+      - table: venta.view_nota_pedido_item
+        role: "Vista de lectura de nota_pedido_item con saldos pendientes calculados (ncantidadpendienteremito/factura) y flag de oferta"
+        key_columns: [nitem, nnotapedido, vnotapedido, ncantidad, ntipostock, ncantidadremitida, ncantidadfacturada, ncantidadpendienteremito, ncantidadpendientefactura, nofertaxarticuloxlistadeprecio, barticuloenoferta]
+        source: "db/inc/009_v1.8.0.sql — la vista se redefine 3 veces en el mismo archivo (líneas 1359, 1436, 1552); vale la ÚLTIMA (línea 1552, 2026-08-07)"
+      - table: administracion.frecuencia_nota_pedido
+        role: "Configuración de expiración de la reserva asociada a la NP (cada cuántas unidades de tiempo vence)"
+        key_columns: [nfrecuencianotapedido, nfrecuencia, nvalor]
+        source: "circuito_venta.md §7 (nombres de columna aproximados, no confirmados contra SQL)"
+      - table: util.frecuencia
+        role: "Catálogo de unidades de tiempo (Días=1, Horas=2) usado por la configuración de expiración"
+        key_columns: [nfrecuencia, vfrecuencia]
+        source: "circuito_venta.md §7"
+
+      # --- Presupuesto (opcional, previo a facturar) ---
+      - table: stock.presupuesto
+        role: "Comprobante sin efecto sobre stock ni caja: cotización de precios para el cliente, convertible luego en Factura de Venta"
+        key_columns: [npresupuesto, ncliente, dfecha, ndeposito, nlistaprecio, vnumero, nrazonsocial, ftotal, fdescuento, fiva]
+        source: "PRESUPUESTO_FACTURA_VENTA.md §1.1"
+      - table: stock.presupuestoxitem
+        role: "Ítems del presupuesto; admite ingreso libre (narticulo NULL, línea de texto sin artículo de BD)"
+        key_columns: [nitem, npresupuesto, narticulo, ncantidad, fprecionunitario, ftotal, ndescuento, fconversionart]
+        source: "PRESUPUESTO_FACTURA_VENTA.md §1.1"
+      - table: venta.factura_x_presupuesto
+        role: "Vínculo entre el Presupuesto y la Factura de Venta que lo concretó"
+        key_columns: [nfacturaxpresupuesto, npresupuesto, nfacturaventa]
+        source: "docs/diagramas/factura_venta_service_ddl.sql línea 71"
+
+      # --- Carrito Angular / Nexus ---
+      - table: venta.carrito_venta
+        role: "Persistencia final de UNA venta confirmada desde el carrito Angular (snapshot JSON completo en jcarritodata); no hay estado 'carrito en progreso' en BD"
+        key_columns: [ncarrito, jcarritodata, nusuariocreador, tscreado, nnotapedido]
+        source: "docs/diagramas/carrito_ddl.sql (2026-08-04), consistente con factura_venta_service_ddl.sql"
+      - table: stock.forma_pago
+        role: "Catálogo de formas de pago disponibles en caja/carrito, clasificadas en BILLETE (genera vuelto) vs exacta"
+        key_columns: [nformapago, vdescripcion, bhabilitado, bdestacada, ntipoformapago]
+        source: "docs/diagramas/carrito_ddl.sql"
+      - table: venta.descuento_lista_x_formapago
+        role: "% de descuento configurado por combinación (lista de precio, forma de pago)"
+        key_columns: [ndescuentolistaxformapago, nlistaprecio, nformapago, ndescuento, bhabilitado]
+        source: "docs/diagramas/carrito_ddl.sql"
+
+      # --- Factura de Venta ---
+      - table: stock.factura_venta
+        role: "Cabecera del comprobante fiscal (AFIP CAE); numeración legal por punto de venta/depósito"
+        key_columns: [nfacturaventa, ncliente, vnumero, dfecha, ndeposito, ftotal, ntipocomprobante, nestadofactura, nlistaprecio, vafip_cae, nrazonsocial, ncarritoventa, ftotaliibb, nestadonc, bpagada]
+        source: "docs/diagramas/factura_venta_service_ddl.sql + erd_nota_pedido_remito_factura.dbml (coinciden)"
+      - table: stock.facturaventaxitem
+        role: "Ítems de la factura; nremitoitem indica si el stock ya salió por un Remito previo (no se vuelve a descontar)"
+        key_columns: [nfacturaventaxitem, nfacturaventa, narticulo, nejemplar, ncantidad, fprecionunitario, ftotal, ndescuento, ndeposito, nremitoitem, bnotacredito, barticuloenoferta]
+        source: "CONFLICTO menor resuelto: erd dbml (2026-07-23) muestra ndescuento como integer; db/inc/009_v1.8.0.sql línea 1534 (2026-08-07) lo pasa a numeric(5,2). Autoritativo: db/inc/009_v1.8.0.sql, consistente con docs/diagramas/carrito_ddl.sql"
+      - table: stock.factura_venta_x_item_combo
+        role: "Un renglón por componente de un ítem tipo combo vendido; el stock lo mueven los componentes, no el renglón padre"
+        key_columns: [nfacturaventaxitemcombo, nfacturaventaxitem, nfacturaventa, narticulo, nejemplar, ncantidad, ndeposito]
+        source: "docs/diagramas/factura_venta_service_ddl.sql + erd_nota_pedido_remito_factura.dbml"
+      - table: stock.formapagoxfacturaventa
+        role: "Detalle de formas de pago mezcladas que componen el total de una factura (hasta 3 combinadas desde el carrito)"
+        key_columns: [nformapagoxfacturaventa, nfacturaventa, nformapago, fmonto, nnotacredito, fdescuento, fincremento]
+        source: "docs/diagramas/factura_venta_service_ddl.sql"
+      - table: stock.pago_cheque
+        role: "Detalle de pago con cheque (uno por FP=Cheque en la factura)"
+        key_columns: [npagocheque, nformapagoxfacturaventa, nnumero, nbanco, bdiferido, bcruzado, demision, dvencimiento]
+        source: "docs/diagramas/factura_venta_service_ddl.sql"
+      - table: stock.pago_echeq
+        role: "Detalle de pago con echeq"
+        key_columns: [npagoecheq, nformapagoxfacturaventa, nnumero, nbanco, bdiferido, bcruzado, demision, dvencimiento, vecheq_id]
+        source: "docs/diagramas/factura_venta_service_ddl.sql"
+      - table: stock.pago_tarjeta_credito
+        role: "Detalle de pago con tarjeta de crédito (banco, plan, cuotas, terminal)"
+        key_columns: [npagotarjetacredito, nformapagoxfacturaventa, nbanco, ntarjeta, nplantarjeta, nplanxtarjeta, ncuotas, fcoeficiente, nterminal]
+        source: "docs/diagramas/factura_venta_service_ddl.sql"
+      - table: stock.pago_tarjeta_debito
+        role: "Detalle de pago con tarjeta de débito"
+        key_columns: [npagotarjetadebito, nformapagoxfacturaventa, vnroticket, nbanco]
+        source: "docs/diagramas/factura_venta_service_ddl.sql"
+      - table: stock.pago_transferencia_deposito
+        role: "Detalle de pago por transferencia bancaria"
+        key_columns: [ntransfdep, nformapagoxfacturaventa, nbanco, dfechatransaccion, vnumerooperacion]
+        source: "docs/diagramas/factura_venta_service_ddl.sql"
+      - table: stock.pago_dolares
+        role: "Detalle de pago en dólares billete, con cotización aplicada"
+        key_columns: [ndolares, nformapagoxfacturaventa, fcotizacion, fconversionpesos, fmontodolares]
+        source: "docs/diagramas/factura_venta_service_ddl.sql"
+      - table: venta.cuenta_corriente
+        role: "Cuenta corriente del cliente: asiento generado por factura impaga / cancelado por pago o Nota de Crédito"
+        key_columns: ["columnas no confirmadas en detalle en la documentación disponible"]
+        source: "mencionada en PRESUPUESTO_FACTURA_VENTA.md, sin DDL propio en los archivos revisados"
+      - table: stock.reciboxfacturaventa
+        role: "Vínculo entre un recibo de cobranza y la(s) factura(s) que cancela"
+        key_columns: ["columnas no confirmadas en detalle en la documentación disponible"]
+        source: "mencionada en PRESUPUESTO_FACTURA_VENTA.md, sin DDL propio en los archivos revisados"
+
+      # --- Remito de Venta (entrega física / salida de stock) ---
+      - table: stock.remito
+        role: "Cabecera de remito; ctiporemito distingue Compra/Venta reutilizando la misma tabla para ambos circuitos"
+        key_columns: [nremito, nentidadcp, dfecha, ndeposito, ntipocomprobante, ctiporemito, nfactura, vnumero, nestado, nrazonsocial]
+        source: "docs/diagramas/factura_venta_service_ddl.sql + erd_nota_pedido_remito_factura.dbml"
+      - table: stock.remitoxitem
+        role: "Ítems del remito; nejemplar es el destino final del ejemplar cuando el remito es obligatorio en ambos circuitos"
+        key_columns: [nitem, nremito, narticulo, ncantidad, nejemplar, nfactura]
+        source: "docs/diagramas/factura_venta_service_ddl.sql + erd_nota_pedido_remito_factura.dbml"
+      - table: stock.remitoxitemcombo
+        role: "Un renglón por componente de combo remitido"
+        key_columns: [nremitoxitemcombo, nitem, nremito, narticulo, ncantidad, nejemplar]
+        source: "erd_nota_pedido_remito_factura.dbml (2026-07-23)"
+      - table: stock.garantia
+        role: "Garantía activada solo cuando la línea vendida/remitida trae nejemplar puntual (gap conocido para granel/combo sin ejemplar)"
+        key_columns: [ngarantia, narticulo, nejemplar, tnota, dgarantiainicio, dgarantiafin]
+        source: "erd_nota_pedido_remito_factura.dbml"
+
+      # --- Nota de Crédito de Venta (reversa) ---
+      - table: stock.nota_credito
+        role: "Cabecera de NC de venta; ctiponotacredito distingue si viene de Factura de Venta, Nota de Débito o es manual (ver circuito_venta.md §15.1)"
+        key_columns: [nnotacredito, ncliente, ndeposito, ndepositofacturaventa, corigen, ctiponotacredito, ncomprobanteorigen, nmotivo, vafip_cae, vnumero]
+        source: "circuito_venta.md §15.2"
+      - table: stock.notacreditoxitem
+        role: "Ítems de la NC; nfacturaxitem referencia el renglón de factura devuelto (0 si la NC es manual y no mueve stock)"
+        key_columns: [nnotacreditoxitem, nnotacredito, nfacturaxitem, ncantidad, fprecionunitario]
+        source: "circuito_venta.md §15.2"
+      - table: stock.nota_credito_cuenta_corriente
+        role: "Vincula una NC de cuenta corriente (sin ítems, generada por trigger de diferencia en formapagoxfacturaventa) con el cliente"
+        key_columns: ["columnas no confirmadas en detalle en la documentación disponible"]
+        source: "circuito_venta.md §15.2"
+      - table: stock.historial_articulo_log
+        role: "Log de auditoría de movimientos por artículo (incluye movimiento 'NCV' generado por Nota de Crédito de venta)"
+        key_columns: ["columnas no confirmadas en detalle; se sabe que incluye ntipomov y referencia al artículo"]
+        source: "circuito_venta.md §15.3 (trigger trigger_i_a_notacreditoxitem_historial)"
+
+      # --- Cliente (alta rápida desde el formulario de facturación) ---
+      - table: public.entidadcp
+        role: "Maestro de entidades comerciales (clientes/proveedores); el modal '+' de Factura de Venta hace POST /cliente/save contra esta tabla (y persona/empresa según el tipo elegido)"
+        key_columns: [nentidadcp, ctipoentidad, ctipocui, ncui, ntiporesponsable, nlistaprecio, nlocalidad, bhabilitadocliente]
+        source: "docs/diagramas/carrito_ddl.sql (vista public.view_cliente que la consulta) + ALTA_CLIENTE_MODAL_FACTURA.md"
+
+      # --- Stock (externas, escritas por triggers del circuito de venta) ---
+      - table: stock.articuloxdeposito
+        role: "Stock por depósito; los triggers de reserva/remito/NC actualizan dcantidad y dcantidadreservada (tabla propia del módulo Stock, no se redefine acá)"
+        key_columns: [narticulo, ndeposito, dcantidad, dcantidadreservada]
+        source: "referenciada en circuito_venta.md, CIRCUITO_NP_REMITO_FACTURA.md; DDL completo fuera de alcance de este circuito (ver MODULO_STOCK_ARTICULOS.md)"
+      - table: stock.ejemplar
+        role: "Unidad serializada; cambia de estado (Disponible/Vendido/En soporte técnico) a lo largo del circuito de venta"
+        key_columns: [nejemplar, narticulo, nestadoejemplar, bexhibido, bgarantia]
+        source: "erd_nota_pedido_remito_factura.dbml (stub) + FACTURA_VENTA_SERVICE.md"
+
+  compras:
+    description: "circuito de abastecimiento: Orden de Compra, Factura de Compra, Remito de Compra y Nota de Crédito de Compra, con estados de facturación/remito parcial y trazabilidad entre comprobantes"
+    docs:
+      - Popey-ERP/docs/circuito_compras.md
+      - Popey-ERP/docs/FACTURA_COMPRA.md
+      - Popey-ERP/docs/NOTA_CREDITO_COMPRA.md
+    naming_note: >
+      circuito_compras.md §9 nombra las tablas de forma simplificada/aproximada
+      (compra.orden, compra.factura_compra, compra.remito_compra) que NO
+      coinciden con los nombres físicos reales. db/deployed/017_compra.sql
+      empieza con `DROP TABLE ... compra.orden_compra CASCADE` y recrea el
+      esquema vigente: los nombres reales son compra.orden_compra,
+      compra.facturas_compras, compra.remitos (no orden/factura_compra/
+      remito_compra). Se usan los nombres reales de 017_compra.sql abajo.
+    tables:
+      - table: compra.orden_compra
+        role: "Cabecera de Orden de Compra: comprobante inicial que solicita artículos al proveedor; puede generarse automáticamente si se factura sin orden previa"
+        key_columns: [nordencompra, vordencompra, nproveedor, nsucursal, nrazonsocial, nmoneda, fcotizacion, ftotal, nestadoorden, nestadofactura, nestadoremito]
+        source: "db/deployed/017_compra.sql líneas 67-99 (DROP+CREATE del esquema vigente; sustituye a la 'compra.orden' que nombra circuito_compras.md)"
+      - table: compra.item_orden
+        role: "Ítems de la orden, con contadores acumulados de cuánto ya se facturó/remitió por renglón (mismo patrón que venta.nota_pedido_item, tomado como modelo por CIRCUITO_NP_REMITO_FACTURA.md)"
+        key_columns: [nitemorden, nordencompra, narticulo, ncantidad, fprecio, ncantidadfacturada, ncantidadremitada]
+        source: "db/deployed/017_compra.sql líneas 103-115"
+      - table: compra.estados_orden
+        role: "Catálogo de estado de la orden (Abierto/Cancelado/Cerrado)"
+        key_columns: [nestadoorden, vestadoorden, bpermiteeditar, bshowinform]
+        source: "db/deployed/017_compra.sql líneas 33-40"
+      - table: compra.estado_orden_factura
+        role: "Catálogo de estado de facturación de la orden (Sin factura/Con factura/Factura parcial)"
+        key_columns: [nestadoordenfactura, vestadoordenfactura]
+        source: "db/deployed/017_compra.sql líneas 46-54"
+      - table: compra.estado_orden_remito
+        role: "Catálogo de estado de remisión de la orden (Sin remito/Con remito/Remito parcial)"
+        key_columns: [nestadoordenremito, vestadoordenremito]
+        source: "db/deployed/017_compra.sql líneas 56-64"
+      - table: compra.documentos_compra
+        role: "Catálogo del tipo de documento de referencia de la orden (Nota de venta, Pedido de venta, Proforma, S/Referencia, Otro)"
+        key_columns: [ndocumentoscompra, vdocumento, bhabilitado]
+        source: "db/deployed/017_compra.sql líneas 19-24"
+      - table: compra.relacion_facturas_ordenes
+        role: "Relación N:M Orden ↔ Factura de Compra (ORM `RelacionFacturasOrdenes` en circuito_compras.md §4)"
+        key_columns: [nrelacionfacturasordenes, nordencompra, nfacturacompra]
+        source: "db/deployed/017_compra.sql líneas 630-660"
+      - table: compra.relacion_remitos_ordenes
+        role: "Relación N:M Orden ↔ Remito de Compra (ORM `RelacionRemitosOrdenes` en circuito_compras.md §4; espejada por venta.relacion_remitos_notas_pedido)"
+        key_columns: [nrelacionremitosordenes, nordencompra, nremito]
+        source: "db/deployed/017_compra.sql líneas 1106-1140"
+      - table: compra.facturas_compras
+        role: "Cabecera de Factura de Compra; genera obligación de pago, no impacta stock, solo cuenta corriente"
+        key_columns: [nfacturacompra, vfacturacompra, vcodigofactura, nproveedor, nrazonsocial, nmoneda, fcotizacion, fdescuento, fiva, ftotal, ftotalpercepciones, nestadofactura]
+        source: "db/deployed/017_compra.sql líneas 390-430 — CONFLICTO con circuito_compras.md §9 que la llama 'compra.factura_compra' (sin s); ver naming_note"
+      - table: compra.facturas_compra_items
+        role: "Ítems de la Factura de Compra"
+        key_columns: [nfacturacompraitem, nfacturacompra, narticulo, ncantidad, fpreciounitario, ndescuento, ftipoiva, fcostoarticulo]
+        source: "db/deployed/017_compra.sql líneas 505-518"
+      - table: compra.facturascompras_percepcion
+        role: "Percepciones impositivas cargadas sobre una Factura de Compra"
+        key_columns: [nfacturascomprapercepcion, nfacturacompra, npercepcion, fimporte]
+        source: "db/deployed/017_compra.sql líneas 682-712"
+      - table: compra.remitos
+        role: "Cabecera del Remito de Compra: único comprobante del circuito que impacta stock; controla ingreso total/parcial"
+        key_columns: [nremito, vnumeroremito, nproveedor, nrazonsocial, dfecha, ndeposito, nestadosremitos, nestadosremitosingreso]
+        source: "db/deployed/017_compra.sql líneas 864-883 — CONFLICTO con circuito_compras.md §9 ('compra.remito_compra') y con db/initial/schema_compra_.sql (esquema legacy 'compra.remito_compra'/'compra.remitocompraxitem', superseded); ver naming_note"
+      - table: compra.items_remitos
+        role: "Ítems del remito, con cantidad ingresada a stock acumulada por renglón"
+        key_columns: [nitemsremitos, nremito, narticulo, ncantidad, ncantidadingresada]
+        source: "db/deployed/017_compra.sql líneas 1010-1020"
+      - table: compra.estados_remitos
+        role: "Catálogo de estado del remito (Abierto/Cancelado/Confirmado)"
+        key_columns: [nestadosremitos, vestadoremito, bpermiteeditar, bshowinform]
+        source: "db/deployed/017_compra.sql líneas 820-826"
+      - table: compra.estados_remitos_ingreso
+        role: "Catálogo de estado de ingreso a stock del remito (Sin ingreso/Con ingreso/Ingreso parcial)"
+        key_columns: [nestadosremitosingreso, vestadosremitosingreso]
+        source: "db/deployed/017_compra.sql líneas 850-853"
+      - table: compra.articulo_numero_despacho
+        role: "Cola FIFO de lotes con número de despacho, alimentada por el ingreso del Remito de Compra (ver circuito despacho_fifo para el detalle completo)"
+        key_columns: [narticulonumerodespacho, narticulo, ndeposito, ncantidad, nremanente, vnumerodespacho, ningresosarticulo]
+        source: "circuito_compras.md §11.6 + db/inc/005_v1.4.0.sql (documentado en detalle en el circuito despacho_fifo)"
+      - table: compra.remesa_compra
+        role: "Comprobante de pago al proveedor; puede agrupar y pagar parcialmente múltiples comprobantes"
+        key_columns: ["DDL no localizado en las migraciones versionadas del repo (solo aparece compra.remesa_compra_imagenes en db/deployed/002_v1.2.0.sql); columnas no confirmadas"]
+        source: "circuito_compras.md §3.4 (tabla física probablemente creada fuera del historial de migraciones versionado disponible)"
+      - table: compra.nota_credito_compra
+        role: "Cabecera de NC de compra: ajuste que reduce la deuda con el proveedor (corrección de valores o descuento)"
+        key_columns: [nnotacreditocompra, nproveedor, nrazonsocial, ndeposito, ftotal, fdescuento, fiva, corigen, ncomprobanteorigen, ctiponotacredito, cestado]
+        source: "db/initial/schema_compra_.sql líneas 97-140 — es la única definición encontrada en el repo (no fue tocada por db/deployed/017_compra.sql ni por db/inc/009); tratar con cautela, ver quirk abajo"
+      - table: compra.notacreditocompraxitem
+        role: "Ítems de la NC de compra; referencia nfacturacompraxitem (nombre de columna heredado del esquema legacy stock.facturacompraxitem — ver quirk)"
+        key_columns: [nnotacreditocompraxitem, nnotacreditocompra, nfacturacompraxitem, ncantidad, ftotal, fpreciounitario, ndescuento]
+        source: "db/initial/schema_compra_.sql líneas 147-164"
+      - table: compra.nota_debito_compra
+        role: "Cabecera de ND de compra: ajuste que incrementa la deuda con el proveedor (fletes, penalidades, diferencias de precio)"
+        key_columns: [nnotadebitocompra, dfecha, tnota, ftotal, corigen, ndeposito, cestado, ntipocomprobante, nproveedor, vnumero, ncomprobanteorigen, ctiponotadebito, nrazonsocial]
+        source: "columnas inferidas de compra.view_nota_debito_compra en db/deployed/017_compra.sql líneas 2300-2364 (el CREATE TABLE de la tabla base no está en las migraciones versionadas del repo)"
+      - table: compra.notadebitocompraxitem
+        role: "Ítems de la ND de compra"
+        key_columns: ["columnas no confirmadas en detalle en la documentación disponible"]
+        source: "existencia confirmada por TRUNCATE en db/deployed/000_inicial_popey_erp.sql; sin CREATE TABLE localizado en el repo"
+      - table: stock.factura_compra
+        role: "Esquema LEGACY de factura de compra (schema stock, no compra). compra.view_nota_debito_compra (vigente, redefinida en 017_compra.sql) todavía hace JOIN contra esta tabla para resolver el origen de la ND, no contra compra.facturas_compras — posible deuda técnica/tabla huérfana, no una duplicación intencional documentada en ningún .md"
+        key_columns: [nfacturacompra, "..."]
+        status: [needs_review, legacy]
+        notes: "Separada de la entrada conjunta original 'stock.factura_compra / stock.facturacompraxitem' (marcada como quirk en la decisión de origen). Va junto con stock.facturacompraxitem: esta es la cabecera legacy, la otra es el detalle de ítems de esa misma tabla legacy."
+        source: "db/initial/schema_stock.sql líneas 217-257 (definición) + db/deployed/017_compra.sql línea 2363 (JOIN vigente que la sigue usando) — señalado acá porque genera ambigüedad real de cuál es 'la' tabla de factura de compra"
+      - table: stock.facturacompraxitem
+        role: "Ítems de la tabla legacy stock.factura_compra (mismo esquema stock, no compra)"
+        key_columns: []
+        status: [needs_review, legacy]
+        notes: "Separada de la entrada conjunta original 'stock.factura_compra / stock.facturacompraxitem'. Es el detalle de ítems de stock.factura_compra (ver esa entrada para el detalle del quirk: es la tabla que compra.notacreditocompraxitem.nfacturacompraxitem referencia por nombre de columna heredado, y la que compra.view_nota_debito_compra sigue usando en su JOIN vigente en vez de compra.facturas_compras)."
+        source: "db/initial/schema_stock.sql línea 257 (definición; columnas no relevadas en detalle)"
+      - table: stock.articulo
+        role: "Tabla de Stock externa escrita por los triggers de ingreso del Remito de Compra (fuera de responsabilidad de este circuito; ver MODULO_STOCK_ARTICULOS.md)"
+        key_columns: []
+        status: needs_review
+        notes: "Separada de la entrada conjunta original 'stock.articulo, stock.articuloxdeposito, stock.ejemplar, stock.deposito', que agrupaba las 4 tablas de Stock que el ingreso del Remito de Compra toca vía triggers."
+        source: "circuito_compras.md §3.3, §11.4"
+      - table: stock.articuloxdeposito
+        role: "Tabla de Stock externa escrita por los triggers de ingreso del Remito de Compra (fuera de responsabilidad de este circuito; ver MODULO_STOCK_ARTICULOS.md)"
+        key_columns: []
+        status: needs_review
+        notes: "Separada de la entrada conjunta original 'stock.articulo, stock.articuloxdeposito, stock.ejemplar, stock.deposito', que agrupaba las 4 tablas de Stock que el ingreso del Remito de Compra toca vía triggers."
+        source: "circuito_compras.md §3.3, §11.4"
+      - table: stock.ejemplar
+        role: "Tabla de Stock externa escrita por los triggers de ingreso del Remito de Compra (fuera de responsabilidad de este circuito; ver MODULO_STOCK_ARTICULOS.md)"
+        key_columns: []
+        status: needs_review
+        notes: "Separada de la entrada conjunta original 'stock.articulo, stock.articuloxdeposito, stock.ejemplar, stock.deposito', que agrupaba las 4 tablas de Stock que el ingreso del Remito de Compra toca vía triggers."
+        source: "circuito_compras.md §3.3, §11.4"
+      - table: stock.deposito
+        role: "Tabla de Stock externa: depósito destino del ingreso del Remito de Compra (fuera de responsabilidad de este circuito; ver MODULO_STOCK_ARTICULOS.md)"
+        key_columns: []
+        status: needs_review
+        notes: "Separada de la entrada conjunta original 'stock.articulo, stock.articuloxdeposito, stock.ejemplar, stock.deposito', que agrupaba las 4 tablas de Stock que el ingreso del Remito de Compra toca vía triggers."
+        source: "circuito_compras.md §3.3, §11.4"
+
+    pending_columns:
+      - table: compra.facturas_compra_items
+        column: fimpinterno
+        status: not_implemented
+        description: "Impuesto interno por ítem ('Imp. Interno'), en la moneda de la factura. FACTURA_COMPRA.md documenta el campo `item.impInterno` ya implementado en el frontend (form_factura.js), pero aclara explícitamente que el backend todavía NO lo persiste ('si el backend ignora los campos nuevos, no hay breaking change'). Nombre de tabla inferido: el propio doc especula 'facturacompra_item o similar' (nomenclatura vieja); se usa acá el nombre real vigente de ítems de factura de compra (compra.facturas_compra_items) como destino más probable, sin confirmar."
+        source: "FACTURA_COMPRA.md líneas 284-293"
+      - table: compra.facturas_compras
+        column: ftotalimpinterno
+        status: not_implemented
+        description: "Total de impuesto interno de la factura (suma de fimpinterno de los ítems). No existe todavía como columna persistida; mismo estado pendiente que fimpinterno."
+        source: "FACTURA_COMPRA.md líneas 284-293"
+
+  despacho_fifo:
+    description: "trazabilidad de números de despacho aduanero para artículos a granel: cola FIFO de lotes por depósito, consumo en ventas/remitos/movimientos/transferencias, reversas por nota de crédito y migración a ejemplar; cruza venta, compras y stock"
+    docs:
+      - Popey-ERP/docs/NUMERO_DESPACHO.md
+    naming_note: >
+      Documento único, autocontenido y sin contradicciones con otros .md;
+      cita como fuente de la cola db/inc/005_v1.4.0.sql. No hizo falta
+      resolver conflictos de versión.
+    tables:
+      - table: compra.articulo_numero_despacho
+        role: "Cola FIFO de lotes: una fila por cada ingreso de artículo a granel (remito de compra, entrada directa, transferencia o reingreso), incluso con número NULL"
+        key_columns: [narticulonumerodespacho, narticulo, ndeposito, ncantidad, nremanente, vnumerodespacho, ningresosarticulo, nmovimientodeposito]
+        source: "NUMERO_DESPACHO.md §2.1, DDL completo en circuito_compras.md §11.6 y db/inc/005_v1.4.0.sql"
+      - table: stock.fv_item_despacho
+        role: "Registro de qué lote(s) salieron por un ítem de Factura de Venta (solo si el ítem no vino ya remitido)"
+        key_columns: [nfacturaventaxitem, ncantidad, vnumerodespacho, nremanente]
+        source: "NUMERO_DESPACHO.md §2.2"
+      - table: stock.fv_item_combo_despacho
+        role: "Ídem para ítems de combo de Factura de Venta"
+        key_columns: [nfacturaventaxitemcombo, ncantidad, vnumerodespacho, nremanente]
+        source: "NUMERO_DESPACHO.md §2.2"
+      - table: stock.rv_item_despacho
+        role: "Registro de qué lote(s) salieron por un ítem de Remito de Venta"
+        key_columns: [nitem, ncantidad, vnumerodespacho, nremanente]
+        source: "NUMERO_DESPACHO.md §2.2"
+      - table: stock.rv_item_combo_despacho
+        role: "Ídem para ítems de combo de Remito de Venta"
+        key_columns: [nremitoxitemcombo, ncantidad, vnumerodespacho, nremanente]
+        source: "NUMERO_DESPACHO.md §2.2"
+      - table: stock.mv_item_despacho
+        role: "Registro de salidas/entradas de Movimiento de Depósito (transferencias, salida directa, reingreso por solicitud); nremanente marca cuánto sigue 'en tránsito'"
+        key_columns: [nmovimientodepositoxarticulo, ncantidad, vnumerodespacho, nremanente]
+        source: "NUMERO_DESPACHO.md §2.2, §5, §6"
+      - table: stock.pc_item_despacho
+        role: "Registro de qué lote(s) consumió una parte a granel (ctipoparte='A') de un componente"
+        key_columns: [npartecomponente, ncantidad, vnumerodespacho, nremanente]
+        source: "NUMERO_DESPACHO.md §2.2, §8"
+      - table: stock.ejemplar
+        role: "Destino final del número de despacho cuando un artículo a granel migra a ejemplar (columna vnumerodespacho, no tabla nueva) o cuando ingresa directo como ejemplar"
+        key_columns: [nejemplar, narticulo, vnumerodespacho]
+        source: "NUMERO_DESPACHO.md §7"
+      - table: stock.parte_componente
+        role: "Partes de un componente (artículo tipo 3); las partes 'A' (a granel) consumen/devuelven la cola vía stock.pc_item_despacho"
+        key_columns: [npartecomponente, ctipoparte, fcantidad]
+        source: "NUMERO_DESPACHO.md §8"
+
+  percepciones_iibb:
+    description: "percepciones de Ingresos Brutos: importación mensual del padrón (ARBA/AGIP), cálculo de la percepción en Factura de Venta y cálculo proporcional en Nota de Crédito de Venta, más gestión de exenciones"
+    docs:
+      - Popey-ERP/docs/MODULO_IIBB.md
+      - Popey-ERP/docs/NOTA_CREDITO_IIBB.md
+    naming_note: >
+      Sin conflicto entre los dos .md: NOTA_CREDITO_IIBB.md es un detalle
+      previo/complementario de MODULO_IIBB.md §4, ambos citan db/deployed/
+      005_v1.4.0.sql como origen del esquema (ya deployado, no en db/inc).
+      Se agregan las tablas de padrón (definidas antes, en 001_creacion_tablas.sql)
+      que ningún .md detalla en columnas.
+    tables:
+      - table: administracion.padron_ingresos_brutos
+        role: "Encabezado de cada padrón mensual importado (por provincia/mes/año, con vigencia)"
+        key_columns: [npadron, nprovincia, nanio, nmes, vmes, dfechainiciovigencia, dfechafinvigencia]
+        source: "db/deployed/001_creacion_tablas.sql líneas 1500-1510 (no versionada en ningún .md a nivel columna, solo mencionada por nombre en MODULO_IIBB.md §5)"
+      - table: administracion.padron_ingresos_brutos_tmp
+        role: "Cola de padrones subidos pendientes de procesar por el Shell (PadronesIIBBShell)"
+        key_columns: ["columnas no confirmadas en detalle"]
+        source: "MODULO_IIBB.md §2.1; existencia confirmada en db/deployed/001_creacion_tablas.sql línea 1631"
+      - table: administracion.contribuyentes_x_padron_buenos_aires
+        role: "Contribuyentes de Buenos Aires (ARBA) de un padrón, con su alícuota"
+        key_columns: [ncontrxpadronba, npadron, ncui, falicuota, dfechavigenciadesde, dfechavigenciahasta]
+        source: "db/deployed/001_creacion_tablas.sql líneas 1549+, confirmado en MODULO_IIBB.md §5"
+      - table: administracion.contribuyentes_x_padron_caba
+        role: "Contribuyentes de CABA (AGIP) de un padrón, con alícuota de percepción y de retención"
+        key_columns: [ncui, falicuotapercepcion, falicuotaretencion]
+        source: "MODULO_IIBB.md §5, DDL en db/deployed/001_creacion_tablas.sql línea 1589"
+      - table: administracion.juris_retencion_iibb_x_razon_social
+        role: "Provincias en las que cada razón social está designada agente de percepción"
+        key_columns: ["columnas no confirmadas — DDL no localizado en las migraciones versionadas del repo"]
+        source: "MODULO_IIBB.md §2.4 (mención de uso, sin DDL en el repo)"
+      - table: venta.percepcionesiibb_x_venta
+        role: "Un registro por provincia por Factura de Venta con el monto de percepción retenido"
+        key_columns: [npercepcionesiibbxventa, nfacturaventa, nprovincia, vtitulo, falicuotapercepcion, fmonto, tscreado]
+        source: "db/deployed/005_v1.4.0.sql líneas 118-135 (ya deployado); coincide con MODULO_IIBB.md §5. Nota: MODULO_IIBB.md menciona una columna `vperiodo` que NO aparece en este CREATE TABLE — posible desactualización del .md, no confirmada"
+      - table: venta.percepcionesiibb_x_notacredito
+        role: "Un registro por provincia por Nota de Crédito con el monto de percepción devuelto proporcionalmente"
+        key_columns: [npercepcionesiibbxnotacredito, nnotacredito, nprovincia, vtitulo, falicuotapercepcion, fmonto, tscreado]
+        source: "db/deployed/005_v1.4.0.sql líneas 466-483, consistente entre ambos .md (ninguno le atribuye vperiodo, coincide con el DDL)"
+      - table: stock.factura_venta
+        role: "Total de percepciones IIBB de la Factura de Venta vía la columna ftotaliibb (no es tabla nueva, columna agregada en esta migración)"
+        key_columns: [nfacturaventa, ftotaliibb]
+        source: "db/deployed/005_v1.4.0.sql línea 138"
+      - table: stock.nota_credito
+        role: "Total de percepciones IIBB de la Nota de Crédito vía la columna ftotaliibb (no es tabla nueva, columna agregada en esta migración)"
+        key_columns: [nnotacredito, ftotaliibb]
+        source: "db/deployed/005_v1.4.0.sql — ver también circuito venta §15.2"
+      - table: administracion.exencion_iibb
+        role: "Certificados de exención vigentes por cliente+provincia+período (alícuota siempre 0; no modifica el padrón); sin solape de fechas por constraint EXCLUDE"
+        key_columns: [nexencion, nentidadcp, nprovincia, vnrocertificado, dfechadesde, dfechahasta, falicuota, falicuota_original, nusuariocreador]
+        source: "db/deployed/005_v1.4.0.sql líneas 815-855"
+      - table: administracion.historial_exencion_iibb
+        role: "Auditoría de borrado de exenciones (snapshot completo + usuario que ejecutó el borrado, vía trigger BEFORE DELETE + set_config de sesión)"
+        key_columns: [nhistorial, nexencion, nentidadcp, nprovincia, falicuota, tseliminado, nusuarioelimino]
+        source: "db/deployed/005_v1.4.0.sql líneas 891-912"
+
+  importacion_articulos:
+    description: "alta masiva de artículos desde Excel: mapeo de columnas por campo y por depósito, verificación de datos y confirmación final que crea el artículo y carga el stock inicial por depósito"
+    docs:
+      - Popey-ERP/docs/IMPORTAR_ARTICULOS.md
+    naming_note: >
+      Doc único y autocontenido, sin conflicto con otros .md. Reutiliza el
+      mismo mecanismo de alta de stock que el alta manual (documentado en
+      MODULO_STOCK_ARTICULOS.md §7) y la cola FIFO del circuito despacho_fifo
+      (mismas tablas, no se repiten en detalle acá).
+    tables:
+      - table: stock.articulo
+        role: "Fila creada por cada artículo importado sin error (ArticuloService::crear())"
+        key_columns: [narticulo, varticulo, vpartnumber, ntipostock, ncategoria, nmarca]
+        source: "IMPORTAR_ARTICULOS.md; DDL completo ya relevado en el circuito venta (docs/diagramas/carrito_ddl.sql)"
+      - table: stock.articulo
+        role: "Trigger fnc_trg_i_b_articulo_vpartnumber_unico (BEFORE INSERT/UPDATE OF vpartnumber) que rechaza duplicados case-insensitive sobre esta misma tabla (red de seguridad de base, no UNIQUE constraint, por ~63 grupos de duplicados legacy)"
+        key_columns: [vpartnumber]
+        source: "db/inc/007_v1.6.0.sql (función en línea 227); IMPORTAR_ARTICULOS.md sección 'Unicidad de vpartnumber'"
+      - table: stock.movimiento_deposito
+        role: "Cabecera del movimiento de Entrada Directa (cestadomov='C') que carga el stock inicial; nunca se escribe articuloxdeposito directamente"
+        key_columns: [nmovimientodeposito, ndepositoorigen, ndepositodestino, cestadomov, ntipomov, tnota]
+        source: "db/initial/schema_stock.sql líneas 417-449 — nota: esta versión no incluye la columna nsolicitud que sí usa el circuito de solicitudes de stock (ver despacho_fifo §6); puede estar desactualizada frente a la base viva, no se localizó una redefinición más nueva en el repo"
+      - table: stock.movimientodepositoxarticulo
+        role: "Detalle del movimiento: una línea por ejemplar (ntipostock=2) o una única línea con la cantidad total (ntipostock=1, a granel)"
+        key_columns: [nmovimientodepositoxarticulo, narticulo, nmovimiento, nejemplar, dcantidad]
+        source: "db/initial/schema_stock.sql líneas 454-478"
+      - table: stock.ejemplar
+        role: "Un registro por unidad para artículos ntipostock=2; vserialnumber se autogenera por trigger si viene NULL"
+        key_columns: [nejemplar, narticulo, vserialnumber]
+        source: "IMPORTAR_ARTICULOS.md; ver también erd_nota_pedido_remito_factura.dbml"
+      - table: compra.articulo_numero_despacho
+        role: "Para artículos a granel (ntipostock=1): se registra un lote nuevo con ncantidad=nremanente=cantidad total y vnumerodespacho=NULL (mismo mecanismo que un Ingreso Directo manual; ver circuito despacho_fifo)"
+        key_columns: [narticulonumerodespacho, narticulo, ndeposito, ncantidad, nremanente, vnumerodespacho]
+        source: "IMPORTAR_ARTICULOS.md; DDL completo ya relevado en el circuito despacho_fifo"
+      - table: stock.articuloxdeposito
+        role: "Destino final del stock inicial; lo actualiza el trigger trigger_i_a_movimientodepositoxarticulo, nunca se escribe directo desde el importador"
+        key_columns: [narticulo, ndeposito, dcantidad]
+        source: "IMPORTAR_ARTICULOS.md (remite a MODULO_STOCK_ARTICULOS.md §7)"
+
+  integracion_ecommerce:
+    description: "integración del ERP con marketplaces/e-commerce (MercadoLibre, QLoud, TiendaNube) vía el middleware nexus-api: login/refresh de token, alta y vinculación de cuenta de plataforma, sincronización/publicaciones y webhooks entrantes"
+    docs:
+      - Popey-ERP/docs/ENEXUS_INTEGRACION.md
+      - Popey-ERP/docs/TIENDANUBE_INTEGRACION.md
+    naming_note: >
+      ENEXUS_INTEGRACION.md casi no usa el formato `schema.tabla` en el texto
+      (nombra clases ORM: BridgeTable, CredencialesTable, PlataformaIntegradaTable).
+      Se resolvió el nombre físico real leyendo el `$this->table(...)` de cada
+      *Table.php en Lang-dev/src/Model/Table/ (fuente más directa que cualquier
+      .md o .sql para esto, porque CakePHP no requiere migración versionada:
+      estas tablas del esquema e_plataforma no aparecen en ningún .sql
+      rastreado del repo — se crearon directo en la base o fuera del historial
+      versionado disponible). TIENDANUBE_INTEGRACION.md es una guía de alta de
+      credenciales de partner, no describe tablas.
+    tables:
+      - table: e_plataforma.bridge
+        role: "Cuenta de conexión del ERP con nexus-api (accessKey/secretKey); getCuenta() siempre trae la primera/única fila"
+        key_columns: [nbridge, "accessKey/secretKey (nombres exactos no confirmados)", nusuariocreador, nusuarioactualiza]
+        source: "Lang-dev/src/Model/Table/BridgeTable.php ($this->table()) + ENEXUS_INTEGRACION.md §2; DDL no localizado en el repo"
+      - table: e_plataforma.credenciales
+        role: "Tokens de sesión con nexus-api (accessToken/refreshToken/expiración); ENexusService::login() toma la última por tscreado"
+        key_columns: [ncredencial, tscreado, "accessToken/refreshToken/expiración (nombres exactos no confirmados)"]
+        source: "Lang-dev/src/Model/Table/CredencialesTable.php + ENEXUS_INTEGRACION.md §4; DDL no localizado en el repo"
+      - table: e_plataforma.plataforma_integrada
+        role: "Catálogo de plataformas soportadas (MercadoLibre=1/meli, QLoud=2/qloud, TiendaNube=3/tiendanube); nplataforma viaja al backend, vidplataforma lo usa el frontend"
+        key_columns: [nplataforma, vidplataforma]
+        source: "ENEXUS_INTEGRACION.md §6, confirmado en Lang-dev/src/Model/Table/PlataformaIntegradaTable.php"
+      - table: e_plataforma.cuenta_x_plataforma
+        role: "Cuenta de plataforma vinculada (una fila por tienda/cuenta conectada); referenciada también en LISTAS_DE_PRECIO.md como origen de la lista de precio con la que vende cada cuenta"
+        key_columns: [ncuentaxplataforma, nplataforma, nlistaprecio]
+        source: "Lang-dev/src/Model/Table/CuentaPlataformaNexusTable.php ($this->table()); no documentada en detalle en ENEXUS_INTEGRACION.md"
+      - table: mercado_libre.meli_relacion_publicacion
+        role: "Relación publicación de MercadoLibre ↔ artículo del ERP (el modal de §9 de ENEXUS_INTEGRACION.md es la UI de esta relación para MELI; otras plataformas probablemente tengan tablas análogas no relevadas acá)"
+        key_columns: [nmelirelacionpublicacion]
+        source: "Lang-dev/src/Model/Table/MeliRelacionPublicacionTable.php"
+
+  envio_comprobantes:
+    description: "envío de comprobantes (Presupuesto, Factura de Venta, Remito de Venta, Nota de Crédito de Venta, Tarea de Servicio Técnico) por email desde un único endpoint, resolviendo el remitente configurable por razón social y documento"
+    docs:
+      - Popey-ERP/docs/ENVIO_COMPROBANTES_EMAIL.md
+      - Popey-ERP/docs/CONTACTO_EMPRESA_CORREOS.md
+    naming_note: >
+      Ambos .md son complementarios (uno documenta el envío, el otro la
+      pantalla de configuración del remitente) y coinciden en las tablas;
+      sin conflicto de versión.
+    tables:
+      - table: administracion.documentos_sistema
+        role: "Catálogo de documentos del sistema habilitados para impresión/email, con la tabla y columna identificadora de origen (vtable/videntificadortabla)"
+        key_columns: [ndocumentosistema, vtipodocumento, vdocumento, ctipocomprobante, bhabilitado, bemailimpresion, vtable, videntificadortabla]
+        source: "db/deployed/007_v1.6.0.sql líneas 88-98, consistente con CONTACTO_EMPRESA_CORREOS.md y ENVIO_COMPROBANTES_EMAIL.md"
+      - table: administracion.email_rz_documento
+        role: "Email configurado por razón social + documento (uno por combinación, UNIQUE); vemail es el campo canónico, fallback al email de la razón social si no hay fila"
+        key_columns: [nemailrzdocumento, ndocumentosistema, nrazonsocial, vemail, bhabilitado]
+        source: "db/deployed/007_v1.6.0.sql líneas 101-117, confirmado en CONTACTO_EMPRESA_CORREOS.md §3 (contrato de datos)"
+      - table: public.razon_social
+        role: "Empresa emisora; email de fallback cuando no hay configuración específica por documento (razon_social.vemail)"
+        key_columns: [nrazonsocial, vemail]
+        source: "ENVIO_COMPROBANTES_EMAIL.md; DDL completo ya relevado en el circuito venta (docs/diagramas/carrito_ddl.sql)"
+      - table: stock.presupuesto
+        role: "Comprobante soportado por /api/email/sendComprobante (origen del PDF adjunto); ya documentado en detalle en el circuito venta, no se repite acá"
+        key_columns: []
+        status: needs_review
+        notes: "Separada de la entrada conjunta original 'stock.presupuesto / stock.factura_venta / stock.remito / stock.nota_credito', que agrupaba los 4 comprobantes con remitente configurable soportados por sendComprobante (a diferencia de servicio_tecnico.tarea, que no lo tiene)."
+        source: "ENVIO_COMPROBANTES_EMAIL.md §1; ver circuito venta para el DDL completo"
+      - table: stock.factura_venta
+        role: "Comprobante soportado por /api/email/sendComprobante (origen del PDF adjunto); ya documentado en detalle en el circuito venta, no se repite acá"
+        key_columns: []
+        status: needs_review
+        notes: "Separada de la entrada conjunta original 'stock.presupuesto / stock.factura_venta / stock.remito / stock.nota_credito', que agrupaba los 4 comprobantes con remitente configurable soportados por sendComprobante (a diferencia de servicio_tecnico.tarea, que no lo tiene)."
+        source: "ENVIO_COMPROBANTES_EMAIL.md §1; ver circuito venta para el DDL completo"
+      - table: stock.remito
+        role: "Comprobante soportado por /api/email/sendComprobante (origen del PDF adjunto); ya documentado en detalle en el circuito venta, no se repite acá"
+        key_columns: []
+        status: needs_review
+        notes: "Separada de la entrada conjunta original 'stock.presupuesto / stock.factura_venta / stock.remito / stock.nota_credito', que agrupaba los 4 comprobantes con remitente configurable soportados por sendComprobante (a diferencia de servicio_tecnico.tarea, que no lo tiene)."
+        source: "ENVIO_COMPROBANTES_EMAIL.md §1; ver circuito venta para el DDL completo"
+      - table: stock.nota_credito
+        role: "Comprobante soportado por /api/email/sendComprobante (origen del PDF adjunto); ya documentado en detalle en el circuito venta, no se repite acá"
+        key_columns: []
+        status: needs_review
+        notes: "Separada de la entrada conjunta original 'stock.presupuesto / stock.factura_venta / stock.remito / stock.nota_credito', que agrupaba los 4 comprobantes con remitente configurable soportados por sendComprobante (a diferencia de servicio_tecnico.tarea, que no lo tiene)."
+        source: "ENVIO_COMPROBANTES_EMAIL.md §1; ver circuito venta para el DDL completo"
+      - table: servicio_tecnico.tarea
+        role: "Único comprobante soportado sin remitente configurable (no está en administracion.documentos_sistema); siempre usa el fallback"
+        key_columns: [ntarea]
+        source: "ENVIO_COMPROBANTES_EMAIL.md §1; DDL completo ya relevado en el circuito venta (docs/diagramas/factura_venta_service_ddl.sql)"
