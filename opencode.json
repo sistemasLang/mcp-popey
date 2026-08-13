@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "popey-erp": {
+      "type": "local",
+      "command": [
+        "/bin/bash",
+        "-c",
+        "set -a; source \"/home/usuario/workspace/TP Developer boost/MCP-Popey/.env\"; set +a; exec \"/home/usuario/workspace/TP Developer boost/MCP-Popey/.venv/bin/python\" \"/home/usuario/workspace/TP Developer boost/MCP-Popey/src/server.py\""
+      ],
+      "enabled": true
+    }
+  }
+}

@@ -24,15 +24,17 @@
 -- schema acá también (y volver a correr el script — los GRANT son
 -- idempotentes).
 
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mcp_popey_ro') THEN
-    EXECUTE format('CREATE ROLE mcp_popey_ro LOGIN PASSWORD %L', :'ro_password');
-  ELSE
-    EXECUTE format('ALTER ROLE mcp_popey_ro LOGIN PASSWORD %L', :'ro_password');
-  END IF;
-END
-$$;
+-- Nota: esto NO va en un bloque DO $$...$$ a propósito. psql interpola
+-- variables (:'ro_password') antes de mandar el texto al servidor, pero esa
+-- interpolación no entra dentro de dollar-quoting — un DO $$...$$ con
+-- :'ro_password' adentro tira "syntax error at or near ':'" porque psql lo
+-- manda literal. \gexec sí funciona porque el SELECT que arma el comando
+-- vive afuera del dollar-quoting.
+SELECT format('CREATE ROLE mcp_popey_ro LOGIN PASSWORD %L', :'ro_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mcp_popey_ro') \gexec
+
+SELECT format('ALTER ROLE mcp_popey_ro LOGIN PASSWORD %L', :'ro_password')
+WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mcp_popey_ro') \gexec
 
 GRANT CONNECT ON DATABASE langdev TO mcp_popey_ro;
 
