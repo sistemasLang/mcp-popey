@@ -5,23 +5,25 @@ base (pool de conexiones, psycopg2, SQL crudo). El resto del código no debería
 importar psycopg2 ni saber que hay un pool — solo llama a las funciones
 públicas de este módulo.
 
-Este módulo asume que la conexión ya usa un usuario de PostgreSQL read-only
-a nivel de rol (GRANT SELECT únicamente) — esa es la barrera real. Las
-guardas de acá (_validate_select_only, límite de filas, timeout) son una
-SEGUNDA capa de defensa en profundidad, no la única, y están escritas para
-ser simples y explicables, no para parsear SQL completo.
+El modo solo lectura lo impone Postgres, no el rol: cada query corre dentro
+de una transacción `READ ONLY` (psycopg2 `set_session(readonly=True)` →
+`BEGIN READ ONLY`) que siempre termina en ROLLBACK, y además cada conexión
+física del pool arranca con `default_transaction_read_only=on`. Postgres
+rechaza cualquier escritura dentro de esa transacción (tablas, secuencias,
+DDL, e incluso funciones plpgsql con efectos secundarios), así que el MCP
+puede conectarse con un rol que tenga permisos de escritura.
 
-`init_pool()` NO confía ciegamente en esa suposición: verifica el permiso
-real del rol conectado contra Postgres (ver `_check_read_only_role`) y, si
-detecta cualquier permiso de escritura/DDL, aborta el arranque — decisión
-explícita: si la barrera "primaria" está comprometida, la guarda de código
-de acá pasa a ser la única protección real, y eso no debe pasar en silencio.
-No hay bypass de este chequeo: existió brevemente un escape hatch
-(`DB_ALLOW_WRITABLE_ROLE`, agregado el 2026-08-08 para poder arrancar contra
-dev antes de tener el rol read-only dedicado) y se sacó el mismo día al
-crear `mcp_popey_ro` (ver `scripts/create_readonly_role.sql`) — dejarlo
-disponible era tentador precisamente en el entorno donde importa que el
-chequeo no se pueda saltear.
+Las guardas de acá (_validate_select_only, límite de filas, timeout) son una
+SEGUNDA capa de defensa en profundidad, no la única, y están escritas para
+ser simples y explicables, no para parsear SQL completo. Bloquean en
+particular `SET`/`RESET`/`set_config`, que es la única forma de apagar el
+modo read-only desde una query.
+
+Historial: hasta 2026-09-23 la barrera primaria era un rol read-only
+dedicado (`mcp_popey_ro`, ver `scripts/create_readonly_role.sql`) y
+`init_pool()` abortaba si el rol conectado tenía permisos de escritura. Se
+reemplazó por la transacción read-only para no depender del rol. Usar
+`mcp_popey_ro` sigue siendo la opción más segura cuando esté disponible.
 """
 
 from __future__ import annotations
@@ -56,10 +58,6 @@ class DbGuardRejected(DbError):
 
 class DbConnectionError(DbError):
     """No se pudo obtener/devolver una conexión del pool."""
-
-
-class DbWritableRoleError(DbConnectionError):
-    """El rol de Postgres conectado tiene algún permiso de escritura/DDL — se esperaba read-only."""
 
 
 class DbQueryError(DbError):
@@ -124,56 +122,36 @@ class DbConfig:
 _pool: psycopg2.pool.ThreadedConnectionPool | None = None
 _pool_config: DbConfig | None = None
 
-# Privilegios que consideramos "escritura" para el chequeo de rol read-only.
-_WRITE_PRIVILEGES = ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
-
-_ROLE_CHECK_SQL = """
-    SELECT
-        r.rolsuper AS is_superuser,
-        EXISTS (
-            SELECT 1 FROM information_schema.role_table_grants g
-            WHERE (g.grantee = current_user OR g.grantee = 'PUBLIC')
-              AND g.privilege_type = ANY(%(write_privileges)s)
-        ) AS has_write_grant,
-        EXISTS (
-            SELECT 1 FROM pg_tables t WHERE t.tableowner = current_user
-        ) AS owns_tables,
-        EXISTS (
-            SELECT 1 FROM pg_namespace n
-            WHERE n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-              AND has_schema_privilege(current_user, n.nspname, 'CREATE')
-        ) AS has_create_privilege
-    FROM pg_roles r
-    WHERE r.rolname = current_user
-"""
+_READ_ONLY_OPTIONS = "-c default_transaction_read_only=on"
 
 
-def _check_read_only_role(conn) -> dict[str, bool]:
-    """Verifica si el rol conectado tiene algún permiso de escritura o DDL.
+def _check_read_only_session(conn) -> None:
+    """Verifica que una transacción de esta conexión quede efectivamente en READ ONLY.
 
-    Cubre los casos comunes: superusuario (bypassa cualquier GRANT), GRANT
-    explícito de INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER (a él o a
-    PUBLIC), ser dueño de alguna tabla (los dueños tienen privilegios
-    implícitos sin necesidad de GRANT), o tener CREATE sobre algún schema
-    no-catálogo (capacidad de DDL). No es una garantía exhaustiva de todos
-    los mecanismos de permisos de Postgres (RLS, roles anidados con NOINHERIT,
-    etc.), pero cubre las formas usuales en que un rol termina siendo
-    escribible sin que se haya hecho explícito.
+    Si por algún motivo (versión de psycopg2, configuración del servidor) la
+    transacción no quedara en modo lectura, el MCP no debe arrancar: esa es
+    la barrera primaria contra escrituras.
     """
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(_ROLE_CHECK_SQL, {"write_privileges": list(_WRITE_PRIVILEGES)})
-        row = cur.fetchone()
-    return dict(row) if row else {}
+    conn.set_session(readonly=True, autocommit=False)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SHOW transaction_read_only")
+            (value,) = cur.fetchone()
+    finally:
+        conn.rollback()
+    if value != "on":
+        raise DbConnectionError(
+            f"La transacción no quedó en modo READ ONLY (transaction_read_only={value!r}). Abortando arranque."
+        )
 
 
 def init_pool(config: DbConfig | None = None) -> None:
-    """Crea el pool de conexiones y verifica que el rol conectado sea read-only.
+    """Crea el pool de conexiones y verifica que las transacciones queden en READ ONLY.
 
     Lo llama server.py al arrancar (o se crea solo, lazy, en el primer uso).
-    Si el rol tiene cualquier permiso de escritura/DDL, loguea CRITICAL y
-    ABORTA (cierra el pool recién creado y levanta DbWritableRoleError) —
-    decisión explícita, ver docstring del módulo: no arrancar con la barrera
-    "primaria" (rol read-only) comprometida.
+    No verifica los permisos del rol: la barrera es la transacción read-only
+    (ver docstring del módulo). Si esa verificación falla, cierra el pool y
+    levanta DbConnectionError.
     """
     global _pool, _pool_config
     config = config or DbConfig.from_env()
@@ -190,33 +168,24 @@ def init_pool(config: DbConfig | None = None) -> None:
             dbname=config.dbname,
             user=config.user,
             password=config.password,
-            # statement_timeout aplicado a nivel de sesión de cada conexión física
-            # del pool, una sola vez al crearse (no en cada query).
-            options=f"-c statement_timeout={config.statement_timeout_ms}",
+            # statement_timeout y read-only por defecto aplicados a nivel de sesión
+            # de cada conexión física del pool, una sola vez al crearse.
+            options=f"-c statement_timeout={config.statement_timeout_ms} {_READ_ONLY_OPTIONS}",
         )
     except psycopg2.Error as exc:
         raise DbConnectionError(f"No se pudo inicializar el pool de conexiones: {exc}") from exc
 
     conn = _pool.getconn()
     try:
-        perms = _check_read_only_role(conn)
-    finally:
+        _check_read_only_session(conn)
+    except (DbConnectionError, psycopg2.Error) as exc:
         _pool.putconn(conn)
-
-    write_flags = {k: v for k, v in perms.items() if v}
-    if write_flags:
-        logger.critical(
-            "El rol de Postgres conectado (%s) tiene permisos de escritura/DDL: %s. "
-            "Se esperaba un rol read-only (GRANT SELECT únicamente). Abortando arranque.",
-            config.user,
-            sorted(write_flags),
-        )
         _pool.closeall()
         _pool = None
-        raise DbWritableRoleError(
-            f"El rol '{config.user}' tiene permisos de escritura/DDL ({sorted(write_flags)}); "
-            "se esperaba un rol read-only. Ver logs (CRITICAL) para el detalle."
-        )
+        if isinstance(exc, DbConnectionError):
+            raise
+        raise DbConnectionError(f"No se pudo verificar el modo read-only: {exc}") from exc
+    _pool.putconn(conn)
 
     _pool_config = config
 
@@ -238,7 +207,11 @@ def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
 
 
 class _PooledConnection:
-    """Context manager chico: pide una conexión, la devuelve siempre, sin dejar transacciones colgadas."""
+    """Context manager chico: pide una conexión, la devuelve siempre, sin dejar transacciones colgadas.
+
+    Cada uso abre una transacción READ ONLY y la cierra con ROLLBACK: aunque
+    algo escapara a las guardas, nunca se hace COMMIT.
+    """
 
     def __enter__(self):
         pool = _get_pool()
@@ -246,12 +219,15 @@ class _PooledConnection:
             self._conn = pool.getconn()
         except psycopg2.pool.PoolError as exc:
             raise DbConnectionError(f"No se pudo obtener una conexión del pool: {exc}") from exc
-        self._conn.autocommit = True  # solo SELECTs: sin autocommit quedarían transacciones idle abiertas
+        self._conn.set_session(readonly=True, autocommit=False)
         return self._conn
 
     def __exit__(self, exc_type, exc, tb):
         pool = _get_pool()
-        pool.putconn(self._conn)
+        try:
+            self._conn.rollback()
+        finally:
+            pool.putconn(self._conn)
         return False
 
 
@@ -263,14 +239,15 @@ _COMMENT_RE = re.compile(r"--[^\n]*|/\*.*?\*/", re.DOTALL)
 
 # Palabras que no deberían aparecer en un SELECT de solo lectura legítimo.
 # No es una lista exhaustiva ni un parser de SQL — es defensa en profundidad
-# sobre el usuario read-only real de Postgres.
+# sobre la transacción READ ONLY. SET/RESET se bloquean porque son la vía
+# para apagar el modo read-only; INTO porque `SELECT ... INTO` crea tablas.
 _FORBIDDEN_KEYWORDS = (
     "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "GRANT",
     "REVOKE", "CREATE", "EXECUTE", "CALL", "COPY", "VACUUM", "REINDEX",
     "MERGE", "LOCK",
     "PG_SLEEP", "PG_TERMINATE_BACKEND", "PG_CANCEL_BACKEND",
     "PG_READ_FILE", "PG_READ_BINARY_FILE", "PG_LS_DIR", "LO_IMPORT", "LO_EXPORT",
-    "DBLINK", "SET_CONFIG",
+    "DBLINK", "SET_CONFIG", "SET", "RESET", "INTO",
 )
 _FORBIDDEN_RE = re.compile(
     r"\b(" + "|".join(_FORBIDDEN_KEYWORDS) + r")\b", re.IGNORECASE

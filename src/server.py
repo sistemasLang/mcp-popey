@@ -17,9 +17,9 @@ Política de warnings (decidida explícitamente, no es el default de nadie):
 circuits.yaml es informativo, no una barrera de acceso. Ni "la tabla no
 pertenece a este circuito" ni "está needs_review/legacy" bloquean la
 ejecución — se devuelven como texto en `warnings` junto a los datos. La
-única barrera real de acceso es el usuario read-only de Postgres + las
-guardas de código en db.py (solo SELECT, una sentencia, sin palabras
-prohibidas) — ver docstring de db.py.
+única barrera real de acceso es la transacción READ ONLY que impone db.py
+en Postgres + las guardas de código en db.py (solo SELECT, una sentencia,
+sin palabras prohibidas) — ver docstring de db.py.
 
 ÚNICA EXCEPCIÓN bloqueante a esa política: si `circuito` no es uno de los
 circuitos existentes, query_circuit y get_circuit_schema rechazan antes de

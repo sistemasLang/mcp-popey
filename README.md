@@ -20,9 +20,9 @@ que el otro existe. `server.py` es el único módulo que conoce a ambos.
 
 - Python 3.12+ (probado con esa versión; no se testeó en versiones anteriores).
 - Acceso de red a una instancia de Postgres con el esquema de Popey ERP.
-- **Un rol de Postgres genuinamente read-only** (ver [Seguridad](#seguridad-y-política-de-acceso) —
-  el servidor se niega a arrancar si detecta que el rol tiene algún permiso
-  de escritura).
+- Un rol de Postgres con permiso de lectura sobre los schemas de los
+  circuitos. No hace falta que sea read-only: el servidor fuerza
+  transacciones `READ ONLY` (ver [Seguridad](#seguridad-y-política-de-acceso)).
 
 ## Instalación
 
@@ -46,7 +46,7 @@ pip install -r requirements.txt
 | `PGHOST` | No | `localhost` | Host de Postgres |
 | `PGPORT` | No | `5432` | Puerto de Postgres |
 | `PGDATABASE` | **Sí** | — | Nombre de la base |
-| `PGUSER` | **Sí** | — | Rol de conexión — **debe ser read-only**, ver abajo |
+| `PGUSER` | **Sí** | — | Rol de conexión (se recomienda `mcp_popey_ro`, no es obligatorio) |
 | `PGPASSWORD` | **Sí** | — | Contraseña del rol |
 | `DB_POOL_MIN` | No | `1` | Conexiones mínimas del pool |
 | `DB_POOL_MAX` | No | `5` | Conexiones máximas del pool |
@@ -56,13 +56,10 @@ pip install -r requirements.txt
 Si falta alguna de las 3 obligatorias, el servidor no arranca y lo dice
 explícitamente (no hay fallback silencioso a valores de `psycopg2`).
 
-> **Historial**: el 2026-08-08 existió brevemente un `DB_ALLOW_WRITABLE_ROLE`
-> como escape hatch para poder arrancar contra dev antes de tener el rol
-> read-only dedicado (`langdev`, el rol usado hasta entonces, es dueño de
-> tablas y superuser). Se sacó el mismo día al crear `mcp_popey_ro` — ver
-> [creación del rol read-only](#creación-del-rol-read-only-mcp_popey_ro) más
-> abajo. El chequeo de rol no tiene bypass hoy: si el rol conectado tiene
-> cualquier permiso de escritura, el servidor aborta, sin excepciones.
+> **Historial**: hasta el 2026-09-23 el servidor exigía un rol read-only y
+> abortaba el arranque si el rol tenía permisos de escritura. Ese chequeo se
+> reemplazó por transacciones `READ ONLY` forzadas (ver
+> [Seguridad](#seguridad-y-política-de-acceso)).
 
 ## Correr el servidor
 
@@ -131,16 +128,20 @@ para que el modelo sepa qué puede pedir antes de armar el `sql` de
 
 Hay dos capas independientes, ninguna reemplaza a la otra:
 
-### 1. El rol de Postgres (barrera primaria)
+### 1. Transacción `READ ONLY` (barrera primaria)
 
-`PGUSER` **tiene que ser un rol read-only real** (`GRANT SELECT` únicamente).
-El servidor no confía ciegamente en eso: al arrancar, `db.init_pool()`
-verifica el rol contra Postgres (superusuario, GRANT de escritura propio o
-de `PUBLIC`, ownership de alguna tabla, o `CREATE` sobre algún schema) y, si
-encuentra cualquier permiso de escritura o DDL, **loguea `CRITICAL` y aborta
-el arranque** — no levanta el servidor con la barrera primaria comprometida.
-No hay forma de saltear este chequeo desde configuración (ver historial de
-`DB_ALLOW_WRITABLE_ROLE` arriba).
+Cada query corre dentro de una transacción `READ ONLY` (`BEGIN READ ONLY`
+vía psycopg2 `set_session(readonly=True)`) que siempre termina en
+`ROLLBACK`, y cada conexión del pool arranca con
+`default_transaction_read_only=on`. Postgres rechaza cualquier escritura en
+esa transacción (`INSERT`/`UPDATE`/`DELETE`, DDL, `nextval`, funciones
+plpgsql que escriben), sin importar los permisos del rol. Al arrancar,
+`db.init_pool()` verifica que `transaction_read_only` quede en `on`; si no,
+aborta.
+
+Por eso `PGUSER` puede ser un rol con permisos de escritura. Igual, usar el
+rol read-only dedicado (`mcp_popey_ro`) suma una capa más y sigue siendo la
+opción recomendada.
 
 #### Creación del rol read-only (`mcp_popey_ro`)
 
@@ -169,12 +170,14 @@ agregar ese schema a `scripts/create_readonly_role.sql` y volver a correrlo
 
 ### 2. La guarda de código (segunda capa, defensa en profundidad)
 
-Independientemente del rol, `db.py` valida cada SQL antes de mandarlo a
+Independientemente de la transacción, `db.py` valida cada SQL antes de mandarlo a
 Postgres:
 - tiene que empezar con `SELECT`;
 - una sola sentencia (rechaza `;` interno — bloquea múltiples sentencias);
 - sin palabras prohibidas en ningún lugar de la query (`INSERT`, `UPDATE`,
-  `DELETE`, `DROP`, `ALTER`, `CREATE`, `pg_sleep`, `dblink`, etc.).
+  `DELETE`, `DROP`, `ALTER`, `CREATE`, `pg_sleep`, `dblink`, etc.). `SET`,
+  `RESET` y `set_config` también se bloquean porque son la vía para apagar
+  el modo read-only, e `INTO` porque `SELECT ... INTO` crea tablas.
 
 Un `DELETE`/`UPDATE` mandado a `query_circuit` se rechaza acá, en Python,
 antes de llegar a la base — no depende de que Postgres tire un error de
@@ -211,8 +214,8 @@ una excepción corta el flujo antes de llegar ahí.
 
 - **"Faltan variables de entorno obligatorias para conectar a Postgres"** —
   falta `PGDATABASE`, `PGUSER` o `PGPASSWORD`.
-- **El servidor no arranca y loguea `CRITICAL` sobre permisos de
-  escritura/DDL** — `PGUSER` no es read-only; corregir los `GRANT` del rol
-  en Postgres (no hay forma de saltear este chequeo desde acá a propósito).
+- **"La transacción no quedó en modo READ ONLY"** — Postgres no aplicó
+  `transaction_read_only=on`; revisar la versión de psycopg2 o la
+  configuración del servidor (no hay bypass de este chequeo).
 - **`ModuleNotFoundError` al importar `mcp`, `sqlglot` o `psycopg2`** —
   faltó `pip install -r requirements.txt` (o el venv no está activado).
