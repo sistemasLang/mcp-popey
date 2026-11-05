@@ -618,3 +618,37 @@ circuits:
         role: "Único comprobante soportado sin remitente configurable (no está en administracion.documentos_sistema); siempre usa el fallback"
         key_columns: [ntarea]
         source: "ENVIO_COMPROBANTES_EMAIL.md §1; DDL completo ya relevado en el circuito venta (docs/diagramas/factura_venta_service_ddl.sql)"
+        
+  usuario:
+    description: "Usuarios del sistema: maestro de usuario, su estado (habilitado/baja), sus roles (incluye cómo se identifica a un vendedor) y a quién apuntan el nusuariocreador/nusuarioactualiza de los comprobantes. Documenta la cadena id_usuario -> nombre."
+    docs:
+      - Popey-ERP/docs/MODULO_USUARIO.md
+    naming_note: >
+      ATENCIÓN: el rol de BD read-only del MCP (mcp_popey_ro) NO tiene acceso
+      al schema `seguridad` (ahí viven password, hash de recuperación y códigos
+      2FA). Las tablas seguridad.* de abajo documentan el MODELO del flujo de
+      usuario, pero NO son consultables desde el MCP: una query contra ellas
+      devuelve "permission denied for schema seguridad". Hoy la resolución
+      id -> nombre solo es posible dentro de la app (acceso completo a
+      seguridad); el MCP no expone una vista para eso.
+      Corrección de un error frecuente: seguridad.usuario NO tiene FK a
+      public.persona; el nombre vive directo en usuario.vnombre/vapellido.
+      nusuariocreador es seguridad.usuario.nusuario, NO public.persona.npersona.
+    tables:
+      - table: seguridad.usuario
+        role: "Maestro de usuarios. PK nusuario. El nombre vive DIRECTO acá (vnombre, vapellido) — no hay FK a persona. nusuariocreador acá es autorreferencia (qué usuario lo creó). NO consultable por el MCP (schema seguridad sin grant); documentada solo como modelo."
+        key_columns: [nusuario, vnombre, vapellido, vusuario, vemail, bhabilitado]
+        source: "introspección de la base viva (information_schema) — 2026-10-01"
+        notes: "Columnas sensibles que por eso no se exponen al rol read-only: vpassword, vhashrecupclave, vcodigo2fa y timestamps de 2FA/bloqueo."
+      - table: seguridad.usuarioxrol
+        role: "Asignación N:M usuario↔rol, con alcance por depósito. Una fila por (nusuario, nrol, ndeposito): un mismo rol se repite una vez por depósito asignado. 'Es vendedor' = existe al menos una fila con nrol = 4. NO consultable por el MCP."
+        key_columns: [nusuarioxrol, nusuario, nrol, ndeposito]
+        source: "introspección de la base viva (FKs: usuarioxrol_usuario, usuarioxrol_rol, usuarioxrol_ndeposito_fkey) — 2026-10-01"
+      - table: seguridad.rol
+        role: "Catálogo de roles. nrol -> vrol: 1 ADMINISTRADOR, 2 GERENTE, 3 ENCARGADO, 4 VENDEDOR, 5 CONTADOR, 6 SOPORTE, 7 SERVICIO TECNICO, 8 DISTRIBUIDOR, 9 CONSULTOR, 10 FULL, 11 CAJERO, 12 DESPACHO. NO consultable por el MCP."
+        key_columns: [nrol, vrol]
+        source: "introspección de la base viva (seguridad.rol) — 2026-10-01"
+      - table: seguridad.view_usuario
+        role: "Vista COMPLETA de usuario que usa la app (no el MCP): expone vfullname ('Apellido, Nombre') y flags brol* por rol, pero TAMBIÉN vpassword — por eso el MCP NO la usa ni tiene grant sobre ella. Referencia del modelo de cómo la app resuelve id -> nombre."
+        key_columns: [nusuario, vfullname, vrol, nroles, bhabilitado, brolvendedor]
+        source: "pg_get_viewdef('seguridad.view_usuario') — 2026-10-01"

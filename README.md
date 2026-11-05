@@ -52,6 +52,11 @@ pip install -r requirements.txt
 | `DB_POOL_MAX` | No | `5` | Conexiones máximas del pool |
 | `DB_STATEMENT_TIMEOUT_MS` | No | `30000` | `statement_timeout` de sesión (ms), aplicado a cada conexión del pool al crearse |
 | `DB_DEFAULT_ROW_LIMIT` | No | `1000` | `LIMIT` que se agrega automáticamente a una query que no trae uno |
+| `MCP_HOST` | No | `0.0.0.0` | Dirección de escucha HTTP |
+| `MCP_PORT` | No | `8000` | Puerto HTTP interno del contenedor y puerto publicado en el host |
+| `MCP_ALLOWED_HOSTS` | No | `localhost:8000,127.0.0.1:8000` | Valores `Host` permitidos, separados por coma; agregar el dominio público del proxy |
+| `MCP_PUBLIC_URL` | No | `http://localhost:8000` | URL pública del servidor (la del proxy HTTPS) |
+| `MCP_USERS_FILE` | No | `config/users.yaml` (`/app/data/users.yaml` en Docker) | Archivo con los usuarios y el SHA-256 de sus tokens |
 
 Si falta alguna de las 3 obligatorias, el servidor no arranca y lo dice
 explícitamente (no hay fallback silencioso a valores de `psycopg2`).
@@ -61,43 +66,65 @@ explícitamente (no hay fallback silencioso a valores de `psycopg2`).
 > reemplazó por transacciones `READ ONLY` forzadas (ver
 > [Seguridad](#seguridad-y-política-de-acceso)).
 
-## Correr el servidor
+## Docker y transporte HTTP
 
 ```bash
-export PGHOST=...
-export PGDATABASE=...
-export PGUSER=...
-export PGPASSWORD=...
-
-python src/server.py
+cp .env.example .env
+# Editar .env con los datos reales de PostgreSQL.
+docker compose up -d --build
 ```
 
-(Equivalente: `cd src && python server.py` — la resolución de rutas internas
-no depende del directorio desde el que se invoque.)
+El endpoint MCP local queda en `http://localhost:8000/mcp` usando
+**Streamable HTTP**. `PGHOST` debe ser accesible desde el contenedor; si
+PostgreSQL está en otra máquina, usar su hostname/IP privada. Si corre en el
+host Docker, configurar un nombre/IP alcanzable desde el contenedor en lugar
+de `localhost`.
 
-Corre sobre **stdio** por default (`mcp.run()`, transporte `"stdio"`): queda
-esperando mensajes JSON-RPC por `stdin`/`stdout` — no es para ejecutar suelto
-en una terminal y esperar ver algo, es para que lo levante un cliente MCP.
-No usar `print()` en ningún cambio a este código: con stdio, `stdout` **es**
-el canal del protocolo.
+Compose publica el puerto solo en `127.0.0.1`; para acceso remoto, poner un
+proxy inverso en el servidor con TLS y autenticación. Agregar el hostname
+público (incluido el puerto si el proxy lo envía en `Host`) a
+`MCP_ALLOWED_HOSTS` en `.env`. El proxy tiene que usar HTTPS: el token
+viaja en cada request.
 
-### Conectarlo a un cliente MCP
+### Usuarios y tokens
 
-Ejemplo de configuración (Claude Desktop, Claude Code vía `.mcp.json`, u
-otro cliente que use el mismo formato `mcpServers`):
+Todo request exige `Authorization: Bearer <token>` (sin token → `401`). No
+hay roles ni registro público: los usuarios los crea **solo el admin** desde
+la consola del servidor, y no existe ningún endpoint HTTP para gestionarlos.
+
+```bash
+# Alta: imprime el token UNA sola vez, se le pasa al usuario
+docker compose exec popey-mcp python /app/scripts/create_user.py juan
+
+# Token perdido o comprometido: genera uno nuevo e invalida el anterior
+docker compose exec popey-mcp python /app/scripts/create_user.py juan --rotate
+
+# Revocar acceso
+docker compose exec popey-mcp python /app/scripts/create_user.py juan --disable
+```
+
+Solo se guarda el SHA-256 de cada token, en el volumen `mcp-users`
+(`/app/data/users.yaml`), así que sobrevive a recrear el contenedor. Los
+cambios se aplican sin reiniciar el servidor.
+
+### Conectarlo a Claude Code
+
+Con el token que te dio el admin:
+
+```bash
+claude mcp add --transport http popey-erp https://mcp.example.com/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+O en `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "popey-erp": {
-      "command": "/ruta/a/MCP-Popey/.venv/bin/python",
-      "args": ["/ruta/a/MCP-Popey/src/server.py"],
-      "env": {
-        "PGHOST": "...",
-        "PGDATABASE": "...",
-        "PGUSER": "...",
-        "PGPASSWORD": "..."
-      }
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
     }
   }
 }

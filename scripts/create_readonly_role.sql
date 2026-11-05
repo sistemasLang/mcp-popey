@@ -23,6 +23,13 @@
 -- Si circuits.yaml suma un circuito en un schema nuevo, hay que agregar ese
 -- schema acá también (y volver a correr el script — los GRANT son
 -- idempotentes).
+--
+-- EXCEPCIÓN deliberada: el schema `seguridad` NO va en estas listas, aunque el
+-- circuito `usuario` de circuits.yaml liste tablas seguridad.* (usuario,
+-- usuarioxrol, rol, view_usuario). Esas entradas documentan el modelo del flujo
+-- de usuario pero son intencionalmente NO consultables por el rol read-only:
+-- ahí viven password, hash de recuperación y códigos 2FA. NO agregar
+-- `seguridad` acá.
 
 -- Nota: esto NO va en un bloque DO $$...$$ a propósito. psql interpola
 -- variables (:'ro_password') antes de mandar el texto al servidor, pero esa

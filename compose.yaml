@@ -1,0 +1,30 @@
+services:
+  popey-mcp:
+    build: .
+    env_file: .env
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: 8000
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-localhost:8000,127.0.0.1:8000}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8000}
+      # Reach dev Postgres over the shared Docker network
+      # (host.docker.internal breaks when docker0 is down).
+      PGHOST: database
+      PGPORT: 5432
+    volumes:
+      # users.yaml (hashes de tokens) sobrevive a recrear el contenedor.
+      - mcp-users:/app/data
+    ports:
+      - "${MCP_BIND_IP:-192.168.1.50}:${MCP_PORT:-8000}:8000"
+    networks:
+      - default
+      - lang-docker
+    restart: unless-stopped
+
+networks:
+  lang-docker:
+    name: lang-docker_default
+    external: true
+
+volumes:
+  mcp-users:

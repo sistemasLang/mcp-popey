@@ -20,7 +20,7 @@ from typing import Any
 
 import yaml
 
-DEFAULT_PATH = Path(__file__).resolve().parent.parent / "config" / "circuits.yaml"
+RUTA_YAML_POR_DEFECTO = Path(__file__).resolve().parent.parent / "config" / "circuits.yaml"
 
 
 class CircuitNotFoundError(KeyError):
@@ -73,62 +73,93 @@ class Circuit:
 
     def table_names(self) -> tuple[str, ...]:
         """Nombres de tabla (schema.tabla) en el orden del YAML, sin deduplicar ni filtrar por status."""
-        return tuple(t.table for t in self.tables)
+        return tuple(tabla.table for tabla in self.tables)
 
 
-def _coerce_status(raw: Any) -> tuple[str, ...]:
+@dataclass(frozen=True)
+class RoleCircuit:
+    """Tablas visibles para un rol de usuario (sección circuits_rol del YAML)."""
+
+    rol: str
+    description: str = ""
+    tables: tuple[str, ...] = ()
+
+
+def _normalizar_estado(estado_crudo: Any) -> tuple[str, ...]:
     """`status` puede venir como string suelto, lista, o ausente — siempre se normaliza a tupla."""
-    if raw is None:
+    if estado_crudo is None:
         return ()
-    if isinstance(raw, str):
-        return (raw,)
-    return tuple(raw)
+    if isinstance(estado_crudo, str):
+        return (estado_crudo,)
+    return tuple(estado_crudo)
 
 
-def _parse_table(raw: dict) -> TableInfo:
+def _parsear_tabla(datos_tabla: dict) -> TableInfo:
     return TableInfo(
-        table=raw["table"],
-        role=raw.get("role", ""),
-        key_columns=tuple(raw.get("key_columns") or ()),
-        source=raw.get("source", ""),
-        status=_coerce_status(raw.get("status")),
-        notes=raw.get("notes", ""),
+        table=datos_tabla["table"],
+        role=datos_tabla.get("role", ""),
+        key_columns=tuple(datos_tabla.get("key_columns") or ()),
+        source=datos_tabla.get("source", ""),
+        status=_normalizar_estado(datos_tabla.get("status")),
+        notes=datos_tabla.get("notes", ""),
     )
 
 
-def _parse_pending_column(raw: dict) -> PendingColumn:
+def _parsear_columna_pendiente(datos_columna: dict) -> PendingColumn:
     return PendingColumn(
-        table=raw.get("table", ""),
-        column=raw.get("column", ""),
-        status=raw.get("status", ""),
-        description=raw.get("description", ""),
-        source=raw.get("source", ""),
+        table=datos_columna.get("table", ""),
+        column=datos_columna.get("column", ""),
+        status=datos_columna.get("status", ""),
+        description=datos_columna.get("description", ""),
+        source=datos_columna.get("source", ""),
     )
 
 
-def _parse_circuit(name: str, raw: dict) -> Circuit:
+def _parsear_circuito(nombre_circuito: str, datos_circuito: dict) -> Circuit:
     return Circuit(
-        name=name,
-        description=raw.get("description", ""),
-        docs=tuple(raw.get("docs") or ()),
-        naming_note=raw.get("naming_note", ""),
-        tables=tuple(_parse_table(t) for t in raw.get("tables") or ()),
+        name=nombre_circuito,
+        description=datos_circuito.get("description", ""),
+        docs=tuple(datos_circuito.get("docs") or ()),
+        naming_note=datos_circuito.get("naming_note", ""),
+        tables=tuple(_parsear_tabla(datos_tabla) for datos_tabla in datos_circuito.get("tables") or ()),
         pending_columns=tuple(
-            _parse_pending_column(p) for p in raw.get("pending_columns") or ()
+            _parsear_columna_pendiente(datos_columna)
+            for datos_columna in datos_circuito.get("pending_columns") or ()
         ),
     )
 
 
+def _parsear_circuito_de_rol(rol: str, datos_rol: dict) -> RoleCircuit:
+    return RoleCircuit(
+        rol=rol,
+        description=datos_rol.get("description", ""),
+        tables=tuple(datos_rol.get("tables") or ()),
+    )
+
+
 @functools.lru_cache(maxsize=None)
-def _load(path: str) -> dict[str, Circuit]:
-    with open(path, "r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
-    circuits_raw = raw.get("circuits") or {}
-    return {name: _parse_circuit(name, data) for name, data in circuits_raw.items()}
+def _leer_yaml(ruta_yaml: str) -> dict:
+    with open(ruta_yaml, "r", encoding="utf-8") as archivo:
+        return yaml.safe_load(archivo) or {}
 
 
-def _resolve_path(path: str | Path | None) -> str:
-    return str(Path(path)) if path is not None else str(DEFAULT_PATH)
+@functools.lru_cache(maxsize=None)
+def _cargar_circuitos_desde_yaml(ruta_yaml: str) -> dict[str, Circuit]:
+    circuitos_crudos = _leer_yaml(ruta_yaml).get("circuits") or {}
+    return {
+        nombre_circuito: _parsear_circuito(nombre_circuito, datos_circuito)
+        for nombre_circuito, datos_circuito in circuitos_crudos.items()
+    }
+
+
+@functools.lru_cache(maxsize=None)
+def _cargar_roles_desde_yaml(ruta_yaml: str) -> dict[str, RoleCircuit]:
+    roles_crudos = _leer_yaml(ruta_yaml).get("circuits_rol") or {}
+    return {rol: _parsear_circuito_de_rol(rol, datos_rol) for rol, datos_rol in roles_crudos.items()}
+
+
+def _resolver_ruta(ruta_yaml: str | Path | None) -> str:
+    return str(Path(ruta_yaml)) if ruta_yaml is not None else str(RUTA_YAML_POR_DEFECTO)
 
 
 # --------------------------------------------------------------------------
@@ -137,42 +168,42 @@ def _resolve_path(path: str | Path | None) -> str:
 # --------------------------------------------------------------------------
 
 
-def load_circuits(path: str | Path | None = None) -> dict[str, Circuit]:
+def cargar_circuitos(ruta_yaml: str | Path | None = None) -> dict[str, Circuit]:
     """Todos los circuitos como {nombre: Circuit}. Lee el YAML una sola vez por path (cacheado)."""
-    return _load(_resolve_path(path))
+    return _cargar_circuitos_desde_yaml(_resolver_ruta(ruta_yaml))
 
 
-def list_circuits(path: str | Path | None = None) -> list[str]:
+def listar_circuitos(ruta_yaml: str | Path | None = None) -> list[str]:
     """Nombres de todos los circuitos definidos, en el orden del YAML."""
-    return list(load_circuits(path).keys())
+    return list(cargar_circuitos(ruta_yaml).keys())
 
 
-def circuit_exists(name: str, path: str | Path | None = None) -> bool:
-    return name in load_circuits(path)
+def existe_circuito(nombre_circuito: str, ruta_yaml: str | Path | None = None) -> bool:
+    return nombre_circuito in cargar_circuitos(ruta_yaml)
 
 
-def get_circuit(name: str, path: str | Path | None = None) -> Circuit:
-    """El objeto Circuit completo para `name`. Lanza CircuitNotFoundError si no existe."""
-    circuits = load_circuits(path)
+def obtener_circuito(nombre_circuito: str, ruta_yaml: str | Path | None = None) -> Circuit:
+    """El objeto Circuit completo para `nombre_circuito`. Lanza CircuitNotFoundError si no existe."""
+    circuitos = cargar_circuitos(ruta_yaml)
     try:
-        return circuits[name]
+        return circuitos[nombre_circuito]
     except KeyError:
         raise CircuitNotFoundError(
-            f"No existe el circuito '{name}'. Circuitos disponibles: {', '.join(circuits)}"
+            f"No existe el circuito '{nombre_circuito}'. Circuitos disponibles: {', '.join(circuitos)}"
         ) from None
 
 
-def get_description(name: str, path: str | Path | None = None) -> str:
+def obtener_descripcion(nombre_circuito: str, ruta_yaml: str | Path | None = None) -> str:
     """Descripción corta del circuito."""
-    return get_circuit(name, path).description
+    return obtener_circuito(nombre_circuito, ruta_yaml).description
 
 
-def get_tables(name: str, path: str | Path | None = None) -> list[TableInfo]:
+def obtener_tablas(nombre_circuito: str, ruta_yaml: str | Path | None = None) -> list[TableInfo]:
     """Objetos TableInfo completos del circuito (role, key_columns, source, status, notes)."""
-    return list(get_circuit(name, path).tables)
+    return list(obtener_circuito(nombre_circuito, ruta_yaml).tables)
 
 
-def get_allowed_tables(name: str, path: str | Path | None = None) -> list[str]:
+def obtener_nombres_tablas_permitidas(nombre_circuito: str, ruta_yaml: str | Path | None = None) -> list[str]:
     """Nombres de tabla (schema.tabla) del circuito, en el orden del YAML.
 
     NOTA: por ahora devuelve TODAS las tablas listadas, incluidas las
@@ -180,29 +211,47 @@ def get_allowed_tables(name: str, path: str | Path | None = None) -> list[str]:
     YAML). Excluir needs_review es un paso aparte, todavía no implementado
     acá a propósito.
     """
-    return list(get_circuit(name, path).table_names())
+    return list(obtener_circuito(nombre_circuito, ruta_yaml).table_names())
 
 
-def get_pending_columns(name: str, path: str | Path | None = None) -> list[PendingColumn]:
+def obtener_columnas_pendientes(nombre_circuito: str, ruta_yaml: str | Path | None = None) -> list[PendingColumn]:
     """Columnas documentadas como pendientes/no implementadas todavía para el circuito."""
-    return list(get_circuit(name, path).pending_columns)
+    return list(obtener_circuito(nombre_circuito, ruta_yaml).pending_columns)
 
 
-def reload(path: str | Path | None = None) -> None:
+def listar_roles(ruta_yaml: str | Path | None = None) -> list[str]:
+    """Roles definidos en circuits_rol, en el orden del YAML."""
+    return list(_cargar_roles_desde_yaml(_resolver_ruta(ruta_yaml)).keys())
+
+
+def obtener_circuito_de_rol(rol: str, ruta_yaml: str | Path | None = None) -> RoleCircuit:
+    """Tablas visibles para `rol`. Lanza CircuitNotFoundError si el rol no está en circuits_rol."""
+    circuitos_por_rol = _cargar_roles_desde_yaml(_resolver_ruta(ruta_yaml))
+    try:
+        return circuitos_por_rol[rol]
+    except KeyError:
+        raise CircuitNotFoundError(
+            f"No hay circuito definido para el rol '{rol}'. Roles disponibles: {', '.join(circuitos_por_rol)}"
+        ) from None
+
+
+def recargar_yaml(ruta_yaml: str | Path | None = None) -> None:
     """Invalida el cache y fuerza releer el YAML la próxima vez que se consulte."""
-    _load.cache_clear()
+    _leer_yaml.cache_clear()
+    _cargar_circuitos_desde_yaml.cache_clear()
+    _cargar_roles_desde_yaml.cache_clear()
 
 
 if __name__ == "__main__":
     # Chequeo manual rápido: `python circuits.py`
-    for circuit_name in list_circuits():
-        n_tables = len(get_allowed_tables(circuit_name))
-        n_review = sum(1 for t in get_tables(circuit_name) if t.needs_review)
-        n_pending = len(get_pending_columns(circuit_name))
-        extra = []
-        if n_review:
-            extra.append(f"{n_review} needs_review")
-        if n_pending:
-            extra.append(f"{n_pending} pending_columns")
-        suffix = f" ({', '.join(extra)})" if extra else ""
-        print(f"{circuit_name}: {n_tables} tablas{suffix}")
+    for nombre_circuito in listar_circuitos():
+        cantidad_tablas = len(obtener_nombres_tablas_permitidas(nombre_circuito))
+        cantidad_a_revisar = sum(1 for tabla in obtener_tablas(nombre_circuito) if tabla.needs_review)
+        cantidad_columnas_pendientes = len(obtener_columnas_pendientes(nombre_circuito))
+        detalles = []
+        if cantidad_a_revisar:
+            detalles.append(f"{cantidad_a_revisar} needs_review")
+        if cantidad_columnas_pendientes:
+            detalles.append(f"{cantidad_columnas_pendientes} pending_columns")
+        sufijo = f" ({', '.join(detalles)})" if detalles else ""
+        print(f"{nombre_circuito}: {cantidad_tablas} tablas{sufijo}")
