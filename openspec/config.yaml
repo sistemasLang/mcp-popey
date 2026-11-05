@@ -1,0 +1,88 @@
+schema: spec-driven
+
+context: |
+  Proyecto: MCP Popey. Servidor MCP (Streamable HTTP, stateless) que permite a
+  agentes de IA consultar el ERP Popey (PostgreSQL multi-tenant) en SOLO LECTURA,
+  acotado por rol y aislado por tenant. Reemplaza a un MCP anterior en Python que
+  exponía SQL libre; volver a ese modelo está fuera de alcance.
+
+  Principio rector (no negociable):
+    La IA solicita. Node.js valida y autoriza. El QueryCompiler decide el SQL.
+    UserContext decide la base. PostgreSQL aplica la última barrera de solo lectura.
+
+  Restricciones de seguridad (toda propuesta debe respetarlas):
+  - Nunca habrá operaciones de escritura ni DDL. La superficie pública son las tools
+    list_circuits, describe_circuit, query_circuit y query_sql; agregar una tool
+    requiere justificar su modelo de amenazas en design.md.
+  - El SQL libre existe solo en query_sql (opt-in por rol, `sql: true`) y es de lectura
+    garantizada por PostgreSQL: rol mcp_popey_ro solo con SELECT, transacción READ ONLY
+    revertida y una sola sentencia por llamada (cursor del protocolo extendido). Node no
+    parsea ni reescribe ese SQL; cualquier restricción nueva sobre lo que lee se aplica
+    con grants en scripts/create_readonly_role.sql, no con filtros de texto. Supuesto:
+    las bases no tienen dblink ni postgres_fdw instalados.
+  - Deny by default en cada capa: rol sin entrada en circuit-access.yaml = sin acceso;
+    tabla con status desconocido o sin columnas confirmadas = no consultable.
+  - userId, role y databaseKey salen SOLO del UserContext server-side (token Bearer).
+    Ningún input de tool puede aportar base, schema, host, SQL ni identidad; los
+    schemas Zod de input son strict y rechazan propiedades extra.
+  - En query_circuit, todo identificador que llega a SQL proviene de circuits.yaml
+    (CircuitRegistry); los valores viajan siempre como parámetros $n. QueryCompiler
+    es el único lugar del servidor que escribe texto SQL.
+  - Defensa en profundidad: un cambio que debilite una barrera (validación, schema
+    bloqueado, transacción READ ONLY, grants del rol mcp_popey_ro) debe declararlo
+    explícitamente en proposal.md y decir qué barrera queda cubriendo el riesgo.
+  - Los errores que llegan al cliente MCP nunca contienen SQL, texto de PostgreSQL,
+    stack traces ni credenciales. La auditoría nunca registra tokens, valores de
+    filtros ni filas.
+  - El schema `seguridad` está habilitado a propósito (circuito `usuario`) para
+    resolver id de usuario -> nombre/rol. Las columnas de credenciales, 2FA, bloqueo
+    y datos personales sensibles (vpassword, vhashrecupclave, vcodigo2fa,
+    dfechanacimiento, etc.) NUNCA pueden figurar en key_columns, y el rol mcp_popey_ro
+    solo tiene SELECT por columna sobre las seguras (la lista del script debe coincidir
+    con circuits.yaml; un test unitario lo verifica).
+
+  Reglas sobre la configuración de negocio:
+  - config/circuits.yaml documenta circuitos del ERP. Toda columna en key_columns
+    debe estar verificada contra la base viva (pg_catalog) y registrar `source` con
+    fecha. Si no está confirmada, va como pending_columns o no va.
+  - config/circuit-access.yaml (rol -> circuitos) lo define el negocio; un agente
+    nunca inventa ni amplía permisos sin pedido explícito.
+  - Los tenants (databaseKey) se configuran por variables de entorno DB_<KEY>_*.
+    Nunca se commitean credenciales; .env no se lee ni se edita desde un agente.
+
+  Stack y convenciones técnicas:
+  - Node >= 22, TypeScript 7 (ESM, imports con extensión .js), MCP SDK v2 en
+    paquetes separados (@modelcontextprotocol/server y /node), zod 4, pg, yaml.
+  - Arquitectura por capas con un composition root (src/app.ts); las carpetas de
+    src/ gritan el dominio (auth, circuits, permissions, query, database, security,
+    audit, users, mcp). Sin dependencias nuevas sin justificación en design.md.
+  - Tests con vitest: unitarios + e2e MCP por HTTP sin base (npm test) e
+    integración con PostgreSQL efímero vía testcontainers (npm run test:integration).
+    Toda regla de seguridad nueva o modificada lleva test unitario y e2e.
+  - Despliegue: Docker Compose, puerto 127.0.0.1:3030, ./config montado read-only
+    y ./data (users.yaml) como bind mount para que los usuarios sobrevivan reinicios.
+
+  Idioma: artefactos de OpenSpec (proposal, design, specs, tasks) en español neutro,
+  manteniendo las palabras clave normativas SHALL/MUST y el formato WHEN/THEN.
+  Código, identificadores, comentarios y mensajes de error en inglés.
+
+rules:
+  proposal:
+    - Incluir una sección "Impacto en seguridad" que diga qué barreras toca el cambio (o "ninguna").
+    - Declarar qué queda fuera de alcance.
+  design:
+    - Indicar en qué capa se aplica cada regla nueva (Zod, QueryValidator, CircuitRegistry, QueryCompiler, DatabaseAdapter, PostgreSQL).
+  specs:
+    - Cada requisito de seguridad debe tener al menos un escenario de rechazo.
+  tasks:
+    - Incluir tareas de test (unitario y, si toca la superficie MCP, e2e) y de actualización del README cuando cambie el comportamiento visible.
+    - Terminar con npm run typecheck y npm test en verde.
+
+operations:
+  apply:
+    guidance:
+      - No modificar config/circuit-access.yaml ni .env salvo que la tarea lo pida explícitamente.
+      - Correr npm test después de cada grupo de tareas que toque src/.
+  archive:
+    guidance:
+      - Verificar que README.md siga coherente con los specs antes de archivar.

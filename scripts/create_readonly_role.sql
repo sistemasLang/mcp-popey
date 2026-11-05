@@ -1,78 +1,77 @@
--- create_readonly_role.sql — (re)crea el rol Postgres read-only que usa
--- MCP-Popey (PGUSER en .env).
+-- create_readonly_role.sql — creates/updates the PostgreSQL role used by the MCP.
 --
--- Por qué existe este script: la base de dev corre en un contenedor Docker
--- (lang_docker_database_1) sin volumen persistente — cada vez que el
--- contenedor se recrea, el rol se pierde junto con el resto del cluster de
--- Postgres. Este script lo recrea de forma reproducible en vez de dejarlo
--- documentado solo como comandos sueltos en una conversación.
+-- Grants ONLY: CONNECT, USAGE on allowed schemas, SELECT on their tables.
+-- Never INSERT/UPDATE/DELETE/CREATE/ALTER/DROP/TRUNCATE.
+-- The `seguridad` schema (passwords, recovery hashes, 2FA codes) only gets
+-- COLUMN-LEVEL SELECT on the safe columns listed below, which must match the
+-- key_columns of the `usuario` circuit in config/circuits.yaml. Never grant a
+-- table-level SELECT there, and never add it to ALTER DEFAULT PRIVILEGES.
 --
--- Uso:
---   docker cp scripts/create_readonly_role.sql lang_docker_database_1:/tmp/
---   docker exec -it lang_docker_database_1 \
---     psql -U langdev -d langdev -v ON_ERROR_STOP=1 \
---     -v ro_password='<elegir una password>' \
---     -f /tmp/create_readonly_role.sql
+-- Run once per tenant database:
+--   psql -U <owner> -d <database> -v ON_ERROR_STOP=1 \
+--     -v ro_password='<password>' -v owner_role='<owner>' \
+--     -f scripts/create_readonly_role.sql
 --
--- El :'ro_password' se pasa por -v a propósito: así la password nunca queda
--- hardcodeada ni commiteada en este archivo. Después de correrlo, poner esa
--- misma password en PGPASSWORD del .env (PGUSER=mcp_popey_ro).
---
--- Los schemas de la lista son los que hoy aparecen en config/circuits.yaml
--- (grep -oP '(?<=table: )\S+' config/circuits.yaml | cut -d. -f1 | sort -u).
--- Si circuits.yaml suma un circuito en un schema nuevo, hay que agregar ese
--- schema acá también (y volver a correr el script — los GRANT son
--- idempotentes).
---
--- EXCEPCIÓN deliberada: el schema `seguridad` NO va en estas listas, aunque el
--- circuito `usuario` de circuits.yaml liste tablas seguridad.* (usuario,
--- usuarioxrol, rol, view_usuario). Esas entradas documentan el modelo del flujo
--- de usuario pero son intencionalmente NO consultables por el rol read-only:
--- ahí viven password, hash de recuperación y códigos 2FA. NO agregar
--- `seguridad` acá.
+-- The password is passed with -v so it never lives in this file.
+-- If circuits.yaml adds a schema, add it to the lists below and re-run (idempotent).
 
--- Nota: esto NO va en un bloque DO $$...$$ a propósito. psql interpola
--- variables (:'ro_password') antes de mandar el texto al servidor, pero esa
--- interpolación no entra dentro de dollar-quoting — un DO $$...$$ con
--- :'ro_password' adentro tira "syntax error at or near ':'" porque psql lo
--- manda literal. \gexec sí funciona porque el SELECT que arma el comando
--- vive afuera del dollar-quoting.
 SELECT format('CREATE ROLE mcp_popey_ro LOGIN PASSWORD %L', :'ro_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mcp_popey_ro') \gexec
 
-SELECT format('ALTER ROLE mcp_popey_ro LOGIN PASSWORD %L', :'ro_password')
+SELECT format('ALTER ROLE mcp_popey_ro LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT', :'ro_password')
 WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mcp_popey_ro') \gexec
 
-GRANT CONNECT ON DATABASE langdev TO mcp_popey_ro;
+-- Session default: read-only, on top of the READ ONLY transactions the MCP opens.
+ALTER ROLE mcp_popey_ro SET default_transaction_read_only = on;
 
--- Default de Postgres <15: el schema "public" otorga CREATE a PUBLIC (el
--- pseudo-rol), así que CUALQUIER rol lo hereda sin que se lo demos a mano
--- (incluido mcp_popey_ro, rompiendo el chequeo de "rol read-only" de db.py
--- que mira has_schema_privilege(..., 'CREATE')). Esto NO afecta el SELECT
--- sobre las tablas que ya existen en public (eso se otorga aparte, más
--- abajo) — solo saca la capacidad de crear objetos nuevos. Tampoco afecta a
--- langdev: tiene su propio grant explícito de USAGE+CREATE como dueño.
+SELECT format('GRANT CONNECT ON DATABASE %I TO mcp_popey_ro', current_database()) \gexec
+
+-- PostgreSQL < 15 lets PUBLIC create objects in "public".
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
+-- seguridad: start from zero on every run (REVOKE on a table also drops its
+-- column privileges), then grant SELECT only on the safe columns that exist.
+SELECT 'REVOKE ALL ON ALL TABLES IN SCHEMA seguridad FROM mcp_popey_ro'
+WHERE EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'seguridad') \gexec
+SELECT 'GRANT USAGE ON SCHEMA seguridad TO mcp_popey_ro'
+WHERE EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'seguridad') \gexec
+
+-- Safe columns per table. Keep in sync with circuits.yaml (circuit `usuario`);
+-- a unit test fails if they drift apart.
+SELECT format(
+  'GRANT SELECT (%s) ON seguridad.%I TO mcp_popey_ro',
+  string_agg(quote_ident(a.attname), ', ' ORDER BY a.attnum),
+  c.relname
+)
+FROM (VALUES
+  ('usuario', ARRAY['nusuario', 'vnombre', 'vapellido', 'vusuario', 'vemail', 'bhabilitado', 'tshabilitado', 'nusuariocreador', 'tscreado', 'tsactualizado']),
+  ('usuarioxrol', ARRAY['nusuarioxrol', 'nusuario', 'nrol', 'ndeposito']),
+  ('rol', ARRAY['nrol', 'vrol']),
+  ('view_usuario', ARRAY['nusuario', 'vnombre', 'vapellido', 'vfullname', 'vusuario', 'vemail', 'bhabilitado', 'vhabilitado', 'vrol', 'nroles', 'broladmin', 'brolgerente', 'brolencargado', 'brolvendedor', 'brolcontador', 'brolsoporte', 'brolserviciotecnico', 'broldistribuidor', 'brolconsultor', 'brolfull', 'brolcajero', 'broldespacho'])
+) AS allowed (table_name, column_names)
+JOIN pg_namespace n ON n.nspname = 'seguridad'
+JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = allowed.table_name
+JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped AND a.attname = ANY (allowed.column_names)
+GROUP BY c.relname \gexec
+
 GRANT USAGE ON SCHEMA
-  administracion, compra, e_plataforma, mercado_libre, public,
+  administracion, compra, e_plataforma, ecommerce, mercado_libre, public,
   servicio_tecnico, stock, util, venta
   TO mcp_popey_ro;
 
 GRANT SELECT ON ALL TABLES IN SCHEMA
-  administracion, compra, e_plataforma, mercado_libre, public,
+  administracion, compra, e_plataforma, ecommerce, mercado_libre, public,
   servicio_tecnico, stock, util, venta
   TO mcp_popey_ro;
 
--- Para que las tablas creadas a futuro en estos schemas por el rol dueño
--- (langdev) también queden en modo lectura para mcp_popey_ro sin tener que
--- volver a correr el GRANT a mano.
-ALTER DEFAULT PRIVILEGES FOR ROLE langdev IN SCHEMA administracion GRANT SELECT ON TABLES TO mcp_popey_ro;
-ALTER DEFAULT PRIVILEGES FOR ROLE langdev IN SCHEMA compra GRANT SELECT ON TABLES TO mcp_popey_ro;
-ALTER DEFAULT PRIVILEGES FOR ROLE langdev IN SCHEMA e_plataforma GRANT SELECT ON TABLES TO mcp_popey_ro;
-ALTER DEFAULT PRIVILEGES FOR ROLE langdev IN SCHEMA mercado_libre GRANT SELECT ON TABLES TO mcp_popey_ro;
-ALTER DEFAULT PRIVILEGES FOR ROLE langdev IN SCHEMA public GRANT SELECT ON TABLES TO mcp_popey_ro;
-ALTER DEFAULT PRIVILEGES FOR ROLE langdev IN SCHEMA servicio_tecnico GRANT SELECT ON TABLES TO mcp_popey_ro;
-ALTER DEFAULT PRIVILEGES FOR ROLE langdev IN SCHEMA stock GRANT SELECT ON TABLES TO mcp_popey_ro;
-ALTER DEFAULT PRIVILEGES FOR ROLE langdev IN SCHEMA util GRANT SELECT ON TABLES TO mcp_popey_ro;
-ALTER DEFAULT PRIVILEGES FOR ROLE langdev IN SCHEMA venta GRANT SELECT ON TABLES TO mcp_popey_ro;
+-- Future tables created by the owner role stay readable (and only readable).
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA administracion GRANT SELECT ON TABLES TO mcp_popey_ro;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA compra GRANT SELECT ON TABLES TO mcp_popey_ro;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA e_plataforma GRANT SELECT ON TABLES TO mcp_popey_ro;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA ecommerce GRANT SELECT ON TABLES TO mcp_popey_ro;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA mercado_libre GRANT SELECT ON TABLES TO mcp_popey_ro;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA public GRANT SELECT ON TABLES TO mcp_popey_ro;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA servicio_tecnico GRANT SELECT ON TABLES TO mcp_popey_ro;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA stock GRANT SELECT ON TABLES TO mcp_popey_ro;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA util GRANT SELECT ON TABLES TO mcp_popey_ro;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA venta GRANT SELECT ON TABLES TO mcp_popey_ro;

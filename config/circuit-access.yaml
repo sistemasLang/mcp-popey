@@ -1,0 +1,21 @@
+# Role → circuits access policy for the MCP.
+#
+# Deliberately empty: the permissions for Popey must be defined by the
+# business, not guessed. While empty, every role is denied every circuit.
+# See circuit-access.example.yaml for the format.
+#
+# Circuit ids must exist in circuits.yaml; otherwise the server refuses to start.
+
+roles:
+  administrador:
+    circuits:
+      - venta
+      - compras
+      - despacho_fifo
+      - percepciones_iibb
+      - importacion_articulos
+      - integracion_ecommerce
+      - ordenes_ecommerce
+      - envio_comprobantes
+      - usuario
+      - posventa

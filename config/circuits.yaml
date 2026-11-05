@@ -23,6 +23,14 @@
 #      pero sus tablas de columnas pueden quedar desactualizadas apenas se
 #      suma una columna nueva (varios .md lo advierten explícitamente).
 # `source` en cada tabla indica de dónde salieron las columnas listadas.
+#
+# Verificación 2026-10-18: TODAS las tablas y TODAS las key_columns de este
+# archivo se cruzaron contra la base viva (pg_catalog: pg_class + pg_attribute).
+# Esa introspección está por encima de cualquiera de las 5 fuentes anteriores:
+# las tablas inexistentes se eliminaron, las columnas mal nombradas se
+# corrigieron y las tablas sin columnas documentadas se completaron con las
+# reales. Las columnas con secretos (keys, tokens) se dejan fuera a propósito:
+# key_columns es la allowlist de lo que el MCP permite consultar.
 
 circuits:
   venta:
@@ -46,8 +54,8 @@ circuits:
         source: "circuito_venta.md §1.4"
       - table: venta.articuloxreserva_combo
         role: "Un registro por componente de combo cuando se reserva un artículo tipo combo (ntipostock=7)"
-        key_columns: ["columnas no confirmadas en la documentación disponible — se infiere nreservaarticulo/narticulo/ncantidad por analogía con articuloxreserva_articulo"]
-        source: "circuito_venta.md §1.5 (mención sin DDL detallado)"
+        key_columns: [narticuloxreservacombo, narticuloxreservaarticulo, nreservaarticulo, narticulo, ncantidad, nsucursal, bhabilitado, varticulo, vcodeart, nejemplar]
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18; mencionada en circuito_venta.md §1.5"
       - table: venta.reserva_origen
         role: "Catálogo de canales que originan una reserva (Local, Ecommerce, MercadoLibre, Nota de Pedido, Factura de Venta)"
         key_columns: [norigen, vorigen]
@@ -105,7 +113,7 @@ circuits:
       - table: administracion.frecuencia_nota_pedido
         role: "Configuración de expiración de la reserva asociada a la NP (cada cuántas unidades de tiempo vence)"
         key_columns: [nfrecuencianotapedido, nfrecuencia, nvalor]
-        source: "circuito_venta.md §7 (nombres de columna aproximados, no confirmados contra SQL)"
+        source: "circuito_venta.md §7; columnas confirmadas por introspección de la base viva (pg_catalog) — 2026-10-18"
       - table: util.frecuencia
         role: "Catálogo de unidades de tiempo (Días=1, Horas=2) usado por la configuración de expiración"
         key_columns: [nfrecuencia, vfrecuencia]
@@ -122,8 +130,8 @@ circuits:
         source: "PRESUPUESTO_FACTURA_VENTA.md §1.1"
       - table: venta.factura_x_presupuesto
         role: "Vínculo entre el Presupuesto y la Factura de Venta que lo concretó"
-        key_columns: [nfacturaxpresupuesto, npresupuesto, nfacturaventa]
-        source: "docs/diagramas/factura_venta_service_ddl.sql línea 71"
+        key_columns: [nfacturaxpresupuesto, npresupuesto, nfactura]
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18: la FK a la factura se llama nfactura (no nfacturaventa como se había documentado)"
 
       # --- Carrito Angular / Nexus ---
       - table: venta.carrito_venta
@@ -142,8 +150,13 @@ circuits:
       # --- Factura de Venta ---
       - table: stock.factura_venta
         role: "Cabecera del comprobante fiscal (AFIP CAE); numeración legal por punto de venta/depósito"
-        key_columns: [nfacturaventa, ncliente, vnumero, dfecha, ndeposito, ftotal, ntipocomprobante, nestadofactura, nlistaprecio, vafip_cae, nrazonsocial, ncarritoventa, ftotaliibb, nestadonc, bpagada]
-        source: "docs/diagramas/factura_venta_service_ddl.sql + erd_nota_pedido_remito_factura.dbml (coinciden)"
+        key_columns: [nfacturaventa, ncliente, vnumero, dfecha, ndeposito, ftotal, ntipocomprobante, nestadofactura, nlistaprecio, vafip_cae, nrazonsocial, ncarritoventa, ftotaliibb, nestadonc, bpagada, nusuariocreador, norigenventa, vcondicionventa, tnota]
+        source: "docs/diagramas/factura_venta_service_ddl.sql + erd_nota_pedido_remito_factura.dbml (coinciden); nusuariocreador: db/initial/schema_stock.sql:317; norigenventa/vcondicionventa/tnota: introspección de la base viva (information_schema) — 2026-10-21"
+        notes: "nusuariocreador = usuario logueado al emitir la factura (FacturaVentaService.php:840); los triggers del ERP lo usan como vendedor, pero puede ser un cajero. Resolver nombre/rol con el circuito usuario. norigenventa → venta.origen_venta (2 = Mercado Libre, 3 = Digital Web/QLoud). vcondicionventa es texto libre separado por comas (contado, ctacorriente, ...): la pantalla de facturación ecommerce lo fija en 'ctacorriente' sin importar la forma de pago real."
+      - table: venta.origen_venta
+        role: "Catálogo del canal de origen de la Factura de Venta (Local, Mercado Libre, Digital Web, Digital Whatsapp, Digital Redes, Corporativo, Mayorista)"
+        key_columns: [norigenventa, vorigenventa, bhabilitado]
+        source: "introspección de la base viva (information_schema) — 2026-10-21"
       - table: stock.facturaventaxitem
         role: "Ítems de la factura; nremitoitem indica si el stock ya salió por un Remito previo (no se vuelve a descontar)"
         key_columns: [nfacturaventaxitem, nfacturaventa, narticulo, nejemplar, ncantidad, fprecionunitario, ftotal, ndescuento, ndeposito, nremitoitem, bnotacredito, barticuloenoferta]
@@ -182,12 +195,12 @@ circuits:
         source: "docs/diagramas/factura_venta_service_ddl.sql"
       - table: venta.cuenta_corriente
         role: "Cuenta corriente del cliente: asiento generado por factura impaga / cancelado por pago o Nota de Crédito"
-        key_columns: ["columnas no confirmadas en detalle en la documentación disponible"]
-        source: "mencionada en PRESUPUESTO_FACTURA_VENTA.md, sin DDL propio en los archivos revisados"
+        key_columns: [ncuentacorriente, ncliente, nentidad, centidad, ventidad, ftotal, tscreada, nusuariocreador, ndeposito]
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18; mencionada en PRESUPUESTO_FACTURA_VENTA.md"
       - table: stock.reciboxfacturaventa
         role: "Vínculo entre un recibo de cobranza y la(s) factura(s) que cancela"
-        key_columns: ["columnas no confirmadas en detalle en la documentación disponible"]
-        source: "mencionada en PRESUPUESTO_FACTURA_VENTA.md, sin DDL propio en los archivos revisados"
+        key_columns: [nreciboxfacturaventa, nrecibo, nfacturaventa, ftotal]
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18; mencionada en PRESUPUESTO_FACTURA_VENTA.md"
 
       # --- Remito de Venta (entrega física / salida de stock) ---
       - table: stock.remito
@@ -210,20 +223,20 @@ circuits:
       # --- Nota de Crédito de Venta (reversa) ---
       - table: stock.nota_credito
         role: "Cabecera de NC de venta; ctiponotacredito distingue si viene de Factura de Venta, Nota de Débito o es manual (ver circuito_venta.md §15.1)"
-        key_columns: [nnotacredito, ncliente, ndeposito, ndepositofacturaventa, corigen, ctiponotacredito, ncomprobanteorigen, nmotivo, vafip_cae, vnumero]
-        source: "circuito_venta.md §15.2"
+        key_columns: [nnotacredito, nentidadcp, ndeposito, ndepositofacturaventa, corigen, ctiponotacredito, ncomprobanteorigen, nmotivo, vafip_cae, vnumero]
+        source: "circuito_venta.md §15.2; corregido por introspección de la base viva (pg_catalog) — 2026-10-18: el cliente es nentidadcp (no existe ncliente)"
       - table: stock.notacreditoxitem
         role: "Ítems de la NC; nfacturaxitem referencia el renglón de factura devuelto (0 si la NC es manual y no mueve stock)"
-        key_columns: [nnotacreditoxitem, nnotacredito, nfacturaxitem, ncantidad, fprecionunitario]
-        source: "circuito_venta.md §15.2"
+        key_columns: [nnotacreditoxitem, nnotacredito, nfacturaxitem, ncantidad, fpreciounitario]
+        source: "circuito_venta.md §15.2; corregido por introspección de la base viva (pg_catalog) — 2026-10-18: la columna es fpreciounitario (no fprecionunitario como en facturaventaxitem)"
       - table: stock.nota_credito_cuenta_corriente
         role: "Vincula una NC de cuenta corriente (sin ítems, generada por trigger de diferencia en formapagoxfacturaventa) con el cliente"
-        key_columns: ["columnas no confirmadas en detalle en la documentación disponible"]
-        source: "circuito_venta.md §15.2"
+        key_columns: [nnotacredito, nentidadcp, nnotacreditoorigen]
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18; descripta en circuito_venta.md §15.2"
       - table: stock.historial_articulo_log
         role: "Log de auditoría de movimientos por artículo (incluye movimiento 'NCV' generado por Nota de Crédito de venta)"
-        key_columns: ["columnas no confirmadas en detalle; se sabe que incluye ntipomov y referencia al artículo"]
-        source: "circuito_venta.md §15.3 (trigger trigger_i_a_notacreditoxitem_historial)"
+        key_columns: [nhistorialarticulolog, tscreada, narticulo, vcodigo, varticulo, ndeposito, vcomprobante, ncomprobante, vmovimiento, ntipomov, nusuariocreador]
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18; trigger trigger_i_a_notacreditoxitem_historial en circuito_venta.md §15.3"
 
       # --- Cliente (alta rápida desde el formulario de facturación) ---
       - table: public.entidadcp
@@ -290,12 +303,12 @@ circuits:
         source: "db/deployed/017_compra.sql líneas 1106-1140"
       - table: compra.facturas_compras
         role: "Cabecera de Factura de Compra; genera obligación de pago, no impacta stock, solo cuenta corriente"
-        key_columns: [nfacturacompra, vfacturacompra, vcodigofactura, nproveedor, nrazonsocial, nmoneda, fcotizacion, fdescuento, fiva, ftotal, ftotalpercepciones, nestadofactura]
-        source: "db/deployed/017_compra.sql líneas 390-430 — CONFLICTO con circuito_compras.md §9 que la llama 'compra.factura_compra' (sin s); ver naming_note"
+        key_columns: [nfacturacompra, vfacturacompra, vcodigofactura, nproveedor, nrazonsocial, nmoneda, fcotizacion, fdescuento, fiva, ftotal, ftotalpercepciones, nestadofactura, fimpinterno]
+        source: "db/deployed/017_compra.sql líneas 390-430 — CONFLICTO con circuito_compras.md §9 que la llama 'compra.factura_compra' (sin s); ver naming_note. fimpinterno (total de impuesto interno; no existe ftotalimpinterno) confirmado en la base viva (pg_catalog) — 2026-10-18"
       - table: compra.facturas_compra_items
         role: "Ítems de la Factura de Compra"
-        key_columns: [nfacturacompraitem, nfacturacompra, narticulo, ncantidad, fpreciounitario, ndescuento, ftipoiva, fcostoarticulo]
-        source: "db/deployed/017_compra.sql líneas 505-518"
+        key_columns: [nfacturacompraitem, nfacturacompra, narticulo, ncantidad, fpreciounitario, ndescuento, ftipoiva, fcostoarticulo, fimpinterno]
+        source: "db/deployed/017_compra.sql líneas 505-518; fimpinterno (impuesto interno por ítem, antes listado como pendiente) confirmado en la base viva (pg_catalog) — 2026-10-18"
       - table: compra.facturascompras_percepcion
         role: "Percepciones impositivas cargadas sobre una Factura de Compra"
         key_columns: [nfacturascomprapercepcion, nfacturacompra, npercepcion, fimporte]
@@ -320,74 +333,47 @@ circuits:
         role: "Cola FIFO de lotes con número de despacho, alimentada por el ingreso del Remito de Compra (ver circuito despacho_fifo para el detalle completo)"
         key_columns: [narticulonumerodespacho, narticulo, ndeposito, ncantidad, nremanente, vnumerodespacho, ningresosarticulo]
         source: "circuito_compras.md §11.6 + db/inc/005_v1.4.0.sql (documentado en detalle en el circuito despacho_fifo)"
-      - table: compra.remesa_compra
-        role: "Comprobante de pago al proveedor; puede agrupar y pagar parcialmente múltiples comprobantes"
-        key_columns: ["DDL no localizado en las migraciones versionadas del repo (solo aparece compra.remesa_compra_imagenes en db/deployed/002_v1.2.0.sql); columnas no confirmadas"]
-        source: "circuito_compras.md §3.4 (tabla física probablemente creada fuera del historial de migraciones versionado disponible)"
       - table: compra.nota_credito_compra
         role: "Cabecera de NC de compra: ajuste que reduce la deuda con el proveedor (corrección de valores o descuento)"
         key_columns: [nnotacreditocompra, nproveedor, nrazonsocial, ndeposito, ftotal, fdescuento, fiva, corigen, ncomprobanteorigen, ctiponotacredito, cestado]
-        source: "db/initial/schema_compra_.sql líneas 97-140 — es la única definición encontrada en el repo (no fue tocada por db/deployed/017_compra.sql ni por db/inc/009); tratar con cautela, ver quirk abajo"
+        source: "db/initial/schema_compra_.sql líneas 97-140; columnas confirmadas por introspección de la base viva (pg_catalog) — 2026-10-18"
       - table: compra.notacreditocompraxitem
-        role: "Ítems de la NC de compra; referencia nfacturacompraxitem (nombre de columna heredado del esquema legacy stock.facturacompraxitem — ver quirk)"
+        role: "Ítems de la NC de compra; referencia nfacturacompraxitem (nombre de columna heredado de stock.facturacompraxitem)"
         key_columns: [nnotacreditocompraxitem, nnotacreditocompra, nfacturacompraxitem, ncantidad, ftotal, fpreciounitario, ndescuento]
-        source: "db/initial/schema_compra_.sql líneas 147-164"
+        source: "db/initial/schema_compra_.sql líneas 147-164; columnas confirmadas por introspección de la base viva (pg_catalog) — 2026-10-18"
       - table: compra.nota_debito_compra
         role: "Cabecera de ND de compra: ajuste que incrementa la deuda con el proveedor (fletes, penalidades, diferencias de precio)"
         key_columns: [nnotadebitocompra, dfecha, tnota, ftotal, corigen, ndeposito, cestado, ntipocomprobante, nproveedor, vnumero, ncomprobanteorigen, ctiponotadebito, nrazonsocial]
-        source: "columnas inferidas de compra.view_nota_debito_compra en db/deployed/017_compra.sql líneas 2300-2364 (el CREATE TABLE de la tabla base no está en las migraciones versionadas del repo)"
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18 (el CREATE TABLE no está en las migraciones versionadas del repo)"
       - table: compra.notadebitocompraxitem
         role: "Ítems de la ND de compra"
-        key_columns: ["columnas no confirmadas en detalle en la documentación disponible"]
-        source: "existencia confirmada por TRUNCATE en db/deployed/000_inicial_popey_erp.sql; sin CREATE TABLE localizado en el repo"
+        key_columns: [nnotadebitocompraxitem, nnotadebitocompra, nfacturacompraxitem, ncantidad, ftotal, fpreciounitario, ndescuento, vcodigo, vdescripcion]
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18 (sin CREATE TABLE localizado en el repo)"
       - table: stock.factura_compra
-        role: "Esquema LEGACY de factura de compra (schema stock, no compra). compra.view_nota_debito_compra (vigente, redefinida en 017_compra.sql) todavía hace JOIN contra esta tabla para resolver el origen de la ND, no contra compra.facturas_compras — posible deuda técnica/tabla huérfana, no una duplicación intencional documentada en ningún .md"
-        key_columns: [nfacturacompra, "..."]
-        status: [needs_review, legacy]
-        notes: "Separada de la entrada conjunta original 'stock.factura_compra / stock.facturacompraxitem' (marcada como quirk en la decisión de origen). Va junto con stock.facturacompraxitem: esta es la cabecera legacy, la otra es el detalle de ítems de esa misma tabla legacy."
-        source: "db/initial/schema_stock.sql líneas 217-257 (definición) + db/deployed/017_compra.sql línea 2363 (JOIN vigente que la sigue usando) — señalado acá porque genera ambigüedad real de cuál es 'la' tabla de factura de compra"
+        role: "Factura de compra del esquema anterior (schema stock, no compra). compra.view_nota_debito_compra todavía hace JOIN contra esta tabla para resolver el origen de la ND, no contra compra.facturas_compras"
+        key_columns: [nfacturacompra, nproveedor, nrazonsocial, vnumero, dfecha, ndeposito, ftotal, fdescuento, fiva, ntipocomprobante, nestadofactura, cmoneda, fconversion, ftotalpercepcion]
+        notes: "Para facturas de compra vigentes usar compra.facturas_compras; esta tabla sirve para comprobantes del esquema anterior y para resolver el origen de las ND de compra."
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18; JOIN vigente en db/deployed/017_compra.sql línea 2363"
       - table: stock.facturacompraxitem
-        role: "Ítems de la tabla legacy stock.factura_compra (mismo esquema stock, no compra)"
-        key_columns: []
-        status: [needs_review, legacy]
-        notes: "Separada de la entrada conjunta original 'stock.factura_compra / stock.facturacompraxitem'. Es el detalle de ítems de stock.factura_compra (ver esa entrada para el detalle del quirk: es la tabla que compra.notacreditocompraxitem.nfacturacompraxitem referencia por nombre de columna heredado, y la que compra.view_nota_debito_compra sigue usando en su JOIN vigente en vez de compra.facturas_compras)."
-        source: "db/initial/schema_stock.sql línea 257 (definición; columnas no relevadas en detalle)"
+        role: "Ítems de stock.factura_compra; es la tabla que compra.notacreditocompraxitem.nfacturacompraxitem y compra.notadebitocompraxitem.nfacturacompraxitem referencian por nombre"
+        key_columns: [nfacturacompraxitem, nfacturacompra, narticulo, varticulo, vcodeart, ncantidad, fprecionunitario, ftotal, ndescuento, ndeposito, nremitoitem]
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18"
       - table: stock.articulo
         role: "Tabla de Stock externa escrita por los triggers de ingreso del Remito de Compra (fuera de responsabilidad de este circuito; ver MODULO_STOCK_ARTICULOS.md)"
-        key_columns: []
-        status: needs_review
-        notes: "Separada de la entrada conjunta original 'stock.articulo, stock.articuloxdeposito, stock.ejemplar, stock.deposito', que agrupaba las 4 tablas de Stock que el ingreso del Remito de Compra toca vía triggers."
-        source: "circuito_compras.md §3.3, §11.4"
+        key_columns: [narticulo, varticulo, vpartnumber, ntipostock, fcosto, bhabilitado]
+        source: "circuito_compras.md §3.3, §11.4; columnas confirmadas por introspección de la base viva (pg_catalog) — 2026-10-18"
       - table: stock.articuloxdeposito
         role: "Tabla de Stock externa escrita por los triggers de ingreso del Remito de Compra (fuera de responsabilidad de este circuito; ver MODULO_STOCK_ARTICULOS.md)"
-        key_columns: []
-        status: needs_review
-        notes: "Separada de la entrada conjunta original 'stock.articulo, stock.articuloxdeposito, stock.ejemplar, stock.deposito', que agrupaba las 4 tablas de Stock que el ingreso del Remito de Compra toca vía triggers."
-        source: "circuito_compras.md §3.3, §11.4"
+        key_columns: [narticulo, ndeposito, dcantidad, dcantidadreservada]
+        source: "circuito_compras.md §3.3, §11.4; columnas confirmadas por introspección de la base viva (pg_catalog) — 2026-10-18"
       - table: stock.ejemplar
         role: "Tabla de Stock externa escrita por los triggers de ingreso del Remito de Compra (fuera de responsabilidad de este circuito; ver MODULO_STOCK_ARTICULOS.md)"
-        key_columns: []
-        status: needs_review
-        notes: "Separada de la entrada conjunta original 'stock.articulo, stock.articuloxdeposito, stock.ejemplar, stock.deposito', que agrupaba las 4 tablas de Stock que el ingreso del Remito de Compra toca vía triggers."
-        source: "circuito_compras.md §3.3, §11.4"
+        key_columns: [nejemplar, narticulo, ndeposito, nestadoejemplar, vserialnumber, vnumerodespacho]
+        source: "circuito_compras.md §3.3, §11.4; columnas confirmadas por introspección de la base viva (pg_catalog) — 2026-10-18"
       - table: stock.deposito
         role: "Tabla de Stock externa: depósito destino del ingreso del Remito de Compra (fuera de responsabilidad de este circuito; ver MODULO_STOCK_ARTICULOS.md)"
-        key_columns: []
-        status: needs_review
-        notes: "Separada de la entrada conjunta original 'stock.articulo, stock.articuloxdeposito, stock.ejemplar, stock.deposito', que agrupaba las 4 tablas de Stock que el ingreso del Remito de Compra toca vía triggers."
-        source: "circuito_compras.md §3.3, §11.4"
-
-    pending_columns:
-      - table: compra.facturas_compra_items
-        column: fimpinterno
-        status: not_implemented
-        description: "Impuesto interno por ítem ('Imp. Interno'), en la moneda de la factura. FACTURA_COMPRA.md documenta el campo `item.impInterno` ya implementado en el frontend (form_factura.js), pero aclara explícitamente que el backend todavía NO lo persiste ('si el backend ignora los campos nuevos, no hay breaking change'). Nombre de tabla inferido: el propio doc especula 'facturacompra_item o similar' (nomenclatura vieja); se usa acá el nombre real vigente de ítems de factura de compra (compra.facturas_compra_items) como destino más probable, sin confirmar."
-        source: "FACTURA_COMPRA.md líneas 284-293"
-      - table: compra.facturas_compras
-        column: ftotalimpinterno
-        status: not_implemented
-        description: "Total de impuesto interno de la factura (suma de fimpinterno de los ítems). No existe todavía como columna persistida; mismo estado pendiente que fimpinterno."
-        source: "FACTURA_COMPRA.md líneas 284-293"
+        key_columns: [ndeposito, vdescripcion, nrazonsocial, bhabilitado]
+        source: "circuito_compras.md §3.3, §11.4; columnas confirmadas por introspección de la base viva (pg_catalog) — 2026-10-18"
 
   despacho_fifo:
     description: "trazabilidad de números de despacho aduanero para artículos a granel: cola FIFO de lotes por depósito, consumo en ventas/remitos/movimientos/transferencias, reversas por nota de crédito y migración a ejemplar; cruza venta, compras y stock"
@@ -453,8 +439,8 @@ circuits:
         source: "db/deployed/001_creacion_tablas.sql líneas 1500-1510 (no versionada en ningún .md a nivel columna, solo mencionada por nombre en MODULO_IIBB.md §5)"
       - table: administracion.padron_ingresos_brutos_tmp
         role: "Cola de padrones subidos pendientes de procesar por el Shell (PadronesIIBBShell)"
-        key_columns: ["columnas no confirmadas en detalle"]
-        source: "MODULO_IIBB.md §2.1; existencia confirmada en db/deployed/001_creacion_tablas.sql línea 1631"
+        key_columns: [npadrontmp, nprovincia, nanio, nmes, vnombrearchivo, bprocesado, bprocesando, tsinicioproceso, tsfinproceso, breemplazado, npadrontmpreemplazo, nusuariocreador, tscreado]
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18; descripta en MODULO_IIBB.md §2.1. Se omiten vpatharchivo/vnombreunicoarchivo (rutas internas del servidor)"
       - table: administracion.contribuyentes_x_padron_buenos_aires
         role: "Contribuyentes de Buenos Aires (ARBA) de un padrón, con su alícuota"
         key_columns: [ncontrxpadronba, npadron, ncui, falicuota, dfechavigenciadesde, dfechavigenciahasta]
@@ -463,14 +449,10 @@ circuits:
         role: "Contribuyentes de CABA (AGIP) de un padrón, con alícuota de percepción y de retención"
         key_columns: [ncui, falicuotapercepcion, falicuotaretencion]
         source: "MODULO_IIBB.md §5, DDL en db/deployed/001_creacion_tablas.sql línea 1589"
-      - table: administracion.juris_retencion_iibb_x_razon_social
-        role: "Provincias en las que cada razón social está designada agente de percepción"
-        key_columns: ["columnas no confirmadas — DDL no localizado en las migraciones versionadas del repo"]
-        source: "MODULO_IIBB.md §2.4 (mención de uso, sin DDL en el repo)"
       - table: venta.percepcionesiibb_x_venta
         role: "Un registro por provincia por Factura de Venta con el monto de percepción retenido"
         key_columns: [npercepcionesiibbxventa, nfacturaventa, nprovincia, vtitulo, falicuotapercepcion, fmonto, tscreado]
-        source: "db/deployed/005_v1.4.0.sql líneas 118-135 (ya deployado); coincide con MODULO_IIBB.md §5. Nota: MODULO_IIBB.md menciona una columna `vperiodo` que NO aparece en este CREATE TABLE — posible desactualización del .md, no confirmada"
+        source: "db/deployed/005_v1.4.0.sql líneas 118-135 (ya deployado); coincide con MODULO_IIBB.md §5. La columna `vperiodo` que menciona MODULO_IIBB.md NO existe en la base viva (pg_catalog, 2026-10-18): el .md está desactualizado"
       - table: venta.percepcionesiibb_x_notacredito
         role: "Un registro por provincia por Nota de Crédito con el monto de percepción devuelto proporcionalmente"
         key_columns: [npercepcionesiibbxnotacredito, nnotacredito, nprovincia, vtitulo, falicuotapercepcion, fmonto, tscreado]
@@ -512,8 +494,8 @@ circuits:
         source: "db/inc/007_v1.6.0.sql (función en línea 227); IMPORTAR_ARTICULOS.md sección 'Unicidad de vpartnumber'"
       - table: stock.movimiento_deposito
         role: "Cabecera del movimiento de Entrada Directa (cestadomov='C') que carga el stock inicial; nunca se escribe articuloxdeposito directamente"
-        key_columns: [nmovimientodeposito, ndepositoorigen, ndepositodestino, cestadomov, ntipomov, tnota]
-        source: "db/initial/schema_stock.sql líneas 417-449 — nota: esta versión no incluye la columna nsolicitud que sí usa el circuito de solicitudes de stock (ver despacho_fifo §6); puede estar desactualizada frente a la base viva, no se localizó una redefinición más nueva en el repo"
+        key_columns: [nmovimientodeposito, ndepositoorigen, ndepositodestino, cestadomov, ntipomov, tnota, nsolicitud, ningresosarticulo]
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18 (incluye nsolicitud y ningresosarticulo, ausentes en db/initial/schema_stock.sql)"
       - table: stock.movimientodepositoxarticulo
         role: "Detalle del movimiento: una línea por ejemplar (ntipostock=2) o una única línea con la cantidad total (ntipostock=1, a granel)"
         key_columns: [nmovimientodepositoxarticulo, narticulo, nmovimiento, nejemplar, dcantidad]
@@ -549,12 +531,14 @@ circuits:
     tables:
       - table: e_plataforma.bridge
         role: "Cuenta de conexión del ERP con nexus-api (accessKey/secretKey); getCuenta() siempre trae la primera/única fila"
-        key_columns: [nbridge, "accessKey/secretKey (nombres exactos no confirmados)", nusuariocreador, nusuarioactualiza]
-        source: "Lang-dev/src/Model/Table/BridgeTable.php ($this->table()) + ENEXUS_INTEGRACION.md §2; DDL no localizado en el repo"
+        key_columns: [nbridge, vnombreusuario, vuserid, bhabilitado, nusuariocreador, tscreado, nusuarioactualiza, tsactualizado]
+        notes: "vaccesskey y vsecretkey existen pero se excluyen a propósito: son secretos de la cuenta nexus-api y no deben ser consultables."
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18; Lang-dev/src/Model/Table/BridgeTable.php + ENEXUS_INTEGRACION.md §2"
       - table: e_plataforma.credenciales
-        role: "Tokens de sesión con nexus-api (accessToken/refreshToken/expiración); ENexusService::login() toma la última por tscreado"
-        key_columns: [ncredencial, tscreado, "accessToken/refreshToken/expiración (nombres exactos no confirmados)"]
-        source: "Lang-dev/src/Model/Table/CredencialesTable.php + ENEXUS_INTEGRACION.md §4; DDL no localizado en el repo"
+        role: "Tokens de sesión con nexus-api; ENexusService::login() toma la última por tscreado. Solo se exponen metadatos de expiración"
+        key_columns: [ncredencial, nexpiresin, tscreado, tsexpiraciontoken, tsactualizado]
+        notes: "vaccesstoken y vrefreshtoken existen pero se excluyen a propósito: son tokens de sesión y no deben ser consultables."
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18; Lang-dev/src/Model/Table/CredencialesTable.php + ENEXUS_INTEGRACION.md §4"
       - table: e_plataforma.plataforma_integrada
         role: "Catálogo de plataformas soportadas (MercadoLibre=1/meli, QLoud=2/qloud, TiendaNube=3/tiendanube); nplataforma viaja al backend, vidplataforma lo usa el frontend"
         key_columns: [nplataforma, vidplataforma]
@@ -567,6 +551,203 @@ circuits:
         role: "Relación publicación de MercadoLibre ↔ artículo del ERP (el modal de §9 de ENEXUS_INTEGRACION.md es la UI de esta relación para MELI; otras plataformas probablemente tengan tablas análogas no relevadas acá)"
         key_columns: [nmelirelacionpublicacion]
         source: "Lang-dev/src/Model/Table/MeliRelacionPublicacionTable.php"
+      - table: mercado_libre.ml_orden
+        role: "Orden de MercadoLibre descargada (flujo legacy MELIShell/MercadoLibreService); nfacturaventa vincula la orden con la Factura de Venta que la facturó (la factura no guarda la orden)"
+        key_columns: [nmlorden, mlorden_sup, mlorden_inf, tsdatecreated, tslastupdated, tsdateclosed, tbuyingmode, ftotalamount, fpaidamount, tstatus, nbuyerid, vshippingid, tpack_id, nfacturaventa, nusuariofactura, bfacturasubida, tsfechafacturasubida, nusuariosubiofactura, betiquetaimpresa, tsfechaimpresion, nautentificacion]
+        notes: "Excluidas a propósito: vbuyernickname/vbuyerfirstname/vbuyerlastname (datos personales del comprador), tordenjson (payload crudo de MELI), vidfacturasubida."
+        source: "introspección de la base viva (information_schema) — 2026-10-21; Lang-dev/src/Model/Table/MeliOrdenTable.php"
+      - table: ecommerce.elang_venta
+        role: "Venta ecommerce descargada (QLoud = nplataforma 2, Prestashop = 1); tformapago es el medio de pago informado por la plataforma y nfacturaventasistema la Factura de Venta que la facturó"
+        key_columns: [nelangventa, nventa, ncliente, nplataforma, tsfechafactura, tsfechaactualizacion, nestadoelang, nestadosistema, tformapago, ntotalpagado, ntotalventa, treferencia, ntransporte, ncostotransporte, bfree, nfacturaventasistema, ntransportista, vtracking, bpreparadopaquete, tspreparadopaquete]
+        notes: "Excluidas a propósito: tinfocompleta y tinfotransporte (payload crudo con datos personales del cliente), direcciones y numerofactura."
+        source: "introspección de la base viva (information_schema) — 2026-10-21; Lang-dev/src/Model/Table/ELangVentaTable.php"
+
+  ordenes_ecommerce:
+    description: "órdenes de marketplaces (MercadoLibre, QLoud, TiendaNube) recibidas vía e-nexus: llegada de la notificación y su procesamiento por cron, encabezado/ítems/comprador de la orden, cobertura con Nota de Pedido de origen Ecommerce, reservas y solicitudes a otras sucursales, recolección de artículos en el depósito (agrupando órdenes por cuenta) y armado de cada orden por escaneo; incluye el estado efectivo que muestra el listado de órdenes"
+    docs:
+      - Popey-ERP/docs/ORDENES_PLATAFORMA.md
+    naming_note: >
+      Todo el esquema del circuito está en db/inc/010_v1.9.0.sql (migración
+      pendiente; los scripts de esta versión se editan en el lugar, sin bloques
+      de migración). e_plataforma.notificacion_enexus es anterior: el .sql solo
+      le agrega columnas (nestado, vidrecurso, vurlrecurso, tsnotificacion,
+      nintentos, tmotivoerror, tsprocesada). Orden del circuito:
+      (1) callbackUrl() guarda la notificación pendiente → (2) NexusShell::
+      procesarNotificaciones() crea/actualiza la orden, sus ítems y el
+      comprador → (3) cobertura: NP de origen Ecommerce, reservas y
+      solicitudes → (4) recolección (varias órdenes, ítems sumados por cuenta
+      y artículo) → (5) armado por orden contra los renglones de la NP → (6)
+      remito/factura de la NP (circuito venta). El estado que ve el usuario NO
+      es orden_plataforma.nestadoorden (solo 1, 2, 3 u 8) sino
+      view_orden_plataforma.nestadoordenefectivo, derivado con la prioridad
+      cancelada (8) > armado total (7) > armado parcial (6) > recolección
+      Completa (5) > recolección En proceso (4) > nestadoorden.
+      Datos personales del comprador y payloads crudos de la plataforma se
+      excluyen a propósito de key_columns (mismo criterio que
+      mercado_libre.ml_orden en integracion_ecommerce).
+      ATENCIÓN: el rol mcp_popey_ro necesita grant SELECT sobre las tablas
+      nuevas de e_plataforma para que estas consultas funcionen.
+    tables:
+      # --- Paso 1: llegada de la notificación (callbackUrl) ---
+      - table: e_plataforma.notificacion_enexus
+        role: "Cola de notificaciones de e-nexus: ENexusController::callbackUrl() valida la envoltura y la guarda pendiente; NexusShell::procesarNotificaciones() la toma por lote. nestado: 1 pendiente, 2 procesando, 3 procesada, 4 error, 5 descartada (App\\Constant\\EstadoNotificacionENexus)"
+        key_columns: [nnotificacion, nplataforma, vevento, bprocesada, tscreado, tsactualizada, nestado, vidrecurso, vurlrecurso, tsnotificacion, nintentos, tmotivoerror, tsprocesada]
+        notes: "Excluida a propósito: jdata (envoltura completa con la orden y los datos personales del comprador). bprocesada se mantiene en sincronía con nestado solo por compatibilidad; usar nestado. vidrecurso es el id de la orden en la plataforma (cruza con orden_plataforma.vidorden)."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; ALTER en db/inc/010_v1.9.0.sql líneas 223-242; ORDENES_PLATAFORMA.md §2"
+
+      # --- Paso 2: orden, ítems y comprador ---
+      - table: e_plataforma.orden_plataforma
+        role: "Encabezado de la orden: una fila por orden de cada cuenta (UNIQUE ncuentaxplataforma + vidorden). La crea/actualiza NexusShell vía OrdenPlataformaService con la orden normalizada de e-nexus. ncliente es el cliente del ERP (encontrado por documento del comprador o el cargado luego en la NP); vidpack agrupa órdenes de un mismo carrito de MELI"
+        key_columns: [nordenplataforma, ncuentaxplataforma, nplataforma, vidorden, vidpack, tsorden, vestadoplataforma, ncliente, ntipologistica, ftotal, fpagado, fenvio, ncantidad, nestadoorden, tobservacion, vurlrecurso, tscreado, tsactualizado, tscobertura, bwarning]
+        notes: "Excluida a propósito: jorden (data.order completo, con datos del comprador). nestadoorden solo guarda el estado de NP (1, 2, 3) o Cancelada (8): para el estado real usar view_orden_plataforma.nestadoordenefectivo. vestadoplataforma es el status traducido por e-nexus ('pagada', 'cancelada'...). tscobertura = cuándo se ejecutó la cobertura (una sola vez por orden); bwarning = faltantes, ítems sin relación o cambios de la plataforma posteriores a la cobertura. ntipologistica sin FK todavía: el tipo de logística real (fulfillment, cross_docking...) está en view_orden_plataforma.vtipologistica."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/inc/010_v1.9.0.sql líneas 267-318 y 401-403; ORDENES_PLATAFORMA.md §3.2"
+      - table: e_plataforma.estado_orden_plataforma
+        role: "Catálogo de estados de la orden: 1 Sin nota de pedido, 2 Nota de pedido parcial, 3 Nota de pedido completa, 4 Recolección parcial, 5 Recolección completa, 6 Armado parcial, 7 Armado total, 8 Cancelada (App\\Constant\\EstadoOrdenPlataforma)"
+        key_columns: [nestadoorden, vestadoorden, bhabilitado]
+        source: "db/inc/010_v1.9.0.sql líneas 247-261 y 405-407"
+      - table: e_plataforma.orden_plataforma_item
+        role: "Ítems de la orden: uno por publicación + variación. narticulo sale de relation_nexus (null = ítem Sin relación). Contadores de cobertura de 0 a ncantidad: ncantidadnp (en la NP), ncantidadreservada, ncantidadsolicitada (pedida a otra sucursal), ncantidadsinstock"
+        key_columns: [nordenplataformaitem, nordenplataforma, vidpublicacion, vidvariacion, vsku, vnombre, ncantidad, fprecio, fpreciolista, vrelacionnexus, narticulo, fcomision, vtipopublicacion, tscreado, tsactualizado, ncantidadnp, ncantidadreservada, ncantidadsolicitada, ncantidadsinstock, nestadoitem]
+        notes: "Excluidas a propósito: jitem y jitemplataforma (payload normalizado y crudo del ítem). fprecio = precio unitario cobrado; fpreciolista = precio unitario sin descuento; fcomision = sale_fee de MELI por unidad."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/inc/010_v1.9.0.sql líneas 323-352 y 431-452; ORDENES_PLATAFORMA.md §3.3"
+      - table: e_plataforma.estado_orden_plataforma_item
+        role: "Catálogo de estado del ítem de la orden: 1 Pendiente, 2 Reservado, 3 En tránsito, 4 Sin stock, 5 Completo, 6 Sin relación, 7 Cancelado (App\\Constant\\EstadoOrdenPlataformaItem)"
+        key_columns: [nestadoitem, vestadoitem, bhabilitado]
+        source: "db/inc/010_v1.9.0.sql líneas 410-424"
+      - table: e_plataforma.orden_plataforma_item_componente
+        role: "Componentes congelados de un ítem combo (ntipostock 7): copia de stock.articulo_x_combo al guardar el ítem; no se recalculan si cambia el maestro. Los combos se cubren, recolectan y arman por componente"
+        key_columns: [nordenplataformaitemcomponente, nordenplataformaitem, narticulo, ncantidadxunidad, ncantidad, ncantidadreservada, ncantidadsolicitada, ncantidadsinstock, tscreado]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/inc/010_v1.9.0.sql líneas 456-477; ORDENES_PLATAFORMA.md §4.6"
+      - table: e_plataforma.cliente_orden_plataforma
+        role: "Comprador de la orden (1:1 con orden_plataforma), con los datos de facturación tal como los manda la plataforma; con vtipodocumento + documento se busca el cliente del ERP"
+        key_columns: [nclienteordenplataforma, nordenplataforma, vtipodocumento, vtipocliente, vciudad, vprovincia, vcodigopostal, vpais, tscreado, tsactualizado]
+        notes: "Excluidas a propósito por ser datos personales: vnombre, vapellido, vdocumento, vcalle, vnumero, vpiso, vdepto, vtelefono, vemail y jdatos. Para el cliente del ERP usar orden_plataforma.ncliente."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/inc/010_v1.9.0.sql líneas 357-385; ORDENES_PLATAFORMA.md §3.4"
+      - table: e_plataforma.orden_plataforma_historial
+        role: "Bitácora de la orden: cobertura, NP generada/completada, cambios de la plataforma después de la cobertura, recálculos con cambio de estado y cancelación. nusuario null = proceso automático (NexusShell)"
+        key_columns: [nordenplataformahistorial, nordenplataforma, tsevento, vevento, tdetalle, nusuario]
+        notes: "Excluida a propósito: jdatos (snapshot crudo del evento)."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/inc/010_v1.9.0.sql líneas 564-578"
+
+      # --- Paso 3: cobertura (NP de Ecommerce, reservas y solicitudes) ---
+      - table: e_plataforma.orden_plataforma_x_nota_pedido
+        role: "Orden ↔ Nota de Pedido. Hoy una NP por orden (la PK compuesta deja abierta más de una); la NP vigente es la no cancelada más reciente"
+        key_columns: [nordenplataforma, nnotapedido, tscreado]
+        source: "db/inc/010_v1.9.0.sql líneas 480-490; ORDENES_PLATAFORMA.md §4.1"
+      - table: e_plataforma.orden_item_x_nota_pedido_item
+        role: "Ítem de orden ↔ renglón de NP con las unidades que aporta; dos ítems de orden del mismo artículo apuntan al mismo renglón. Se borra en cascada con el renglón (editar la NP lo reconstruye)"
+        key_columns: [nordenitemxnotapedidoitem, nordenplataformaitem, nitem, ncantidad, tscreado]
+        source: "db/inc/010_v1.9.0.sql líneas 494-507 y 582-593"
+      - table: e_plataforma.orden_item_x_reserva
+        role: "Ítem de orden ↔ fila de reserva (la de la NP en la sucursal principal o la reserva de la orden en las demás), con el depósito donde quedó reservado"
+        key_columns: [nordenitemxreserva, nordenplataformaitem, narticuloxreservaarticulo, nreservaarticulo, ndeposito, ncantidad, tscreado]
+        source: "db/inc/010_v1.9.0.sql líneas 511-529; ORDENES_PLATAFORMA.md §4.1"
+      - table: e_plataforma.orden_item_x_solicitud
+        role: "Ítem de orden ↔ renglón de solicitud de stock (principal ← sucursal con stock). narticulo es el componente en combos; ncantidadincorporada = unidades ya sumadas a la NP al recibir la solicitud"
+        key_columns: [nordenitemxsolicitud, nordenplataformaitem, nsolicitudxarticulo, nsolicitudarticulo, ndepositoorigen, ndepositodestino, narticulo, ncantidad, ncantidadincorporada, tscreado]
+        source: "db/inc/010_v1.9.0.sql líneas 533-560; ORDENES_PLATAFORMA.md §4.4"
+      - table: venta.nota_pedido
+        role: "NP generada por la cobertura de la orden: bordenplataforma = true, norigennotapedido = 4 (Ecommerce), con plataforma y cuenta; treferencia = '<nombre> <apellido> - <documento>' del comprador. Detalle completo en el circuito venta"
+        key_columns: [nnotapedido, vnumero, ncliente, ndeposito, nlistaprecio, nestadonotapedido, nestadonotapedidoremito, nestadonotapedidofactura, ftotal, nfacturaventa, bordenplataforma, tobservacionorden, norigennotapedido, nplataforma, ncuentaxplataforma, tscreada]
+        notes: "tobservacionorden = aviso de la orden para quien trabaja la NP (cambios posteriores de la plataforma). treferencia no se expone porque contiene el nombre y documento del comprador."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; ALTER en db/inc/010_v1.9.0.sql líneas 396-397, 615 y 633-634"
+      - table: venta.origen_nota_pedido
+        role: "Catálogo del origen de la NP: 1 Venta (default), 2 Corporativo, 3 Nota de servicio técnico, 4 Ecommerce (App\\Constant\\OrigenNotaPedido)"
+        key_columns: [norigennotapedido, vorigennotapedido, bhabilitado]
+        source: "db/inc/010_v1.9.0.sql líneas 600-612; ORDENES_PLATAFORMA.md §4.8"
+      - table: venta.nota_pedido_item
+        role: "Renglones de la NP de la orden; son lo que se arma (artículos simples) y lo que se remite/factura. Detalle completo en el circuito venta"
+        key_columns: [nitem, nnotapedido, narticulo, ncantidad, nejemplar, ncantidadremitida, ncantidadfacturada]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02"
+      - table: venta.nota_pedido_item_combo
+        role: "Componentes de combo de un renglón de NP; en el armado se arma cada componente, no el combo"
+        key_columns: [nitemcombo, nitem, nnotapedido, narticulo, ncantidad, nejemplar]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02"
+      - table: venta.reserva_articulo
+        role: "Reserva de la orden en sucursales distintas de la principal (la de la principal es la de la NP); se libera al preparar la solicitud o al cancelarse la orden. Detalle en el circuito venta"
+        key_columns: [nreservaarticulo, dfecha, nsucursal, tsfechaexpiracion, norigen, bhabilitado]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02"
+      - table: venta.articuloxreserva_articulo
+        role: "Filas de reserva por artículo referenciadas desde orden_item_x_reserva.narticuloxreservaarticulo"
+        key_columns: [narticuloxreservaarticulo, nreservaarticulo, narticulo, nejemplar, ncantidad, nsucursal, bhabilitado, nitem]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02"
+      - table: stock.solicitud
+        role: "Solicitud de stock que la cobertura genera hacia la sucursal con stock; al recibirla se completa la NP y al cancelarse la orden se cancelan las pendientes"
+        key_columns: [nsolicitudarticulo, ndepositoorigen, ndepositodestino, dfecha, nestadosolicitud, tscreado, benviomercaderia, bprioridad]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; ORDENES_PLATAFORMA.md §4.4-§4.5"
+      - table: stock.solicitudxarticulo
+        role: "Renglones de la solicitud referenciados desde orden_item_x_solicitud.nsolicitudxarticulo"
+        key_columns: [nsolicitudxarticulo, nsolicitud, narticulo, dcantidad, ncantidadconfirmada, tscreado]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02"
+      - table: stock.estado_solicitud
+        role: "Catálogo de estado de la solicitud (1 Pendiente, 2 Procesando, 3 Preparada, 4 Despachada, 5 Recibida, 6 Confirmada, 7 Cancelada, 8 Rechazada...)"
+        key_columns: [nestadosolicitud, vestadosolicitud]
+        source: "introspección de la base viva (stock.estado_solicitud) — 2026-11-02"
+
+      # --- Paso 4: recolección ---
+      - table: e_plataforma.recoleccion
+        role: "Encabezado de la recolección: agrupa varias órdenes en una lista de artículos a juntar en el depósito. videntificador visible (R1, R2...); ncantidadarticulos = total de unidades a recolectar"
+        key_columns: [nrecoleccion, videntificador, nusuariocreador, nusuarioresponsable, nestadorecoleccion, tsfecha, ncantidadarticulos, tsactualizado]
+        notes: "La cancelación es borrado físico (encabezado, ítems y vínculo con las órdenes), en cualquier estado salvo que alguna orden esté armada. Para nombre del creador/responsable usar view_recoleccion."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/inc/010_v1.9.0.sql líneas 778-800; ORDENES_PLATAFORMA.md §6"
+      - table: e_plataforma.estado_recoleccion
+        role: "Catálogo de estado de la recolección: 1 Pendiente, 2 En proceso, 3 Completa, 4 Cancelada (App\\Constant\\EstadoRecoleccion)"
+        key_columns: [nestadorecoleccion, vestadorecoleccion, bhabilitado]
+        source: "db/inc/010_v1.9.0.sql líneas 765-776"
+      - table: e_plataforma.recoleccion_orden
+        role: "Órdenes de la recolección; la orden es la PK: una orden está en a lo sumo una recolección. Quitar la última orden elimina la recolección"
+        key_columns: [nordenplataforma, nrecoleccion, tscreado]
+        source: "db/inc/010_v1.9.0.sql líneas 836-845; ORDENES_PLATAFORMA.md §6.5d"
+      - table: e_plataforma.recoleccion_item
+        role: "Detalle a recolectar: una fila por cuenta y artículo (UNIQUE nrecoleccion + ncuentaxplataforma + narticulo). El mismo artículo de distintas órdenes de una cuenta se suma; entre cuentas no. No se vincula con la orden"
+        key_columns: [nrecoleccionxarticulo, nrecoleccion, ncuentaxplataforma, narticulo, ncantidad, nestado, tnota]
+        notes: "nestado queda null: el catálogo estado_recoleccion_item todavía no tiene estados."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/inc/010_v1.9.0.sql líneas 809-831"
+      - table: e_plataforma.estado_recoleccion_item
+        role: "Catálogo de estado del ítem de recolección; hoy vacío"
+        key_columns: [nestadorecoleccionitem, vestadorecoleccionitem, bhabilitado]
+        source: "db/inc/010_v1.9.0.sql líneas 803-807"
+      - table: e_plataforma.recoleccion_items_detallada
+        role: "Lo recolectado de cada ítem: quién, cuándo y cuánto (escaneo o carga manual). Lo recolectado del ítem es la suma de ncantidad"
+        key_columns: [nrecoleccionitemsdetallada, nrecoleccionxarticulo, nusuario, tscreado, ncantidad]
+        source: "db/inc/010_v1.9.0.sql líneas 847-861; ORDENES_PLATAFORMA.md §6.4c y §6.4e"
+      - table: e_plataforma.view_recoleccion
+        role: "Listado de recolecciones: una fila por recolección con estado, creador/responsable con nombre resuelto y total recolectado"
+        key_columns: [nrecoleccion, videntificador, tsfecha, nusuariocreador, vcreador, nusuarioresponsable, vresponsable, nestadorecoleccion, vestadorecoleccion, ncantidadarticulos, ncantidadrecolectada]
+        notes: "vcreador/vresponsable resuelven el nombre del usuario (la vista lo lee de seguridad.usuario con los permisos de su dueño)."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/inc/010_v1.9.0.sql líneas 869-892"
+      - table: e_plataforma.view_recoleccion_item
+        role: "Ítems de las recolecciones (cuenta y artículo) con plataforma, datos del artículo y cantidad ya recolectada"
+        key_columns: [nrecoleccion, nrecoleccionxarticulo, ncuentaxplataforma, vcuenta, nplataforma, vidplataforma, vplataforma, narticulo, varticulo, vmarca, veanupc, vsku, ncantidad, ncantidadrecolectada, nestado, vestado, tnota]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/inc/010_v1.9.0.sql líneas 898-926"
+
+      # --- Paso 5: armado ---
+      - table: e_plataforma.armado_items_detallada
+        role: "Armado por escaneo: una fila por unidad armada (quién, cuándo, qué renglón de NP o componente de combo, con ejemplar si se escaneó N° de serie). Lo armado sale de sumar este detalle; deshacer borra la última fila. Se borra en cascada si se edita la NP"
+        key_columns: [narmadoitemdetallada, nordenplataforma, nitem, nitemcombo, narticulo, nejemplar, nusuario, tscreado, ncantidad]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/inc/010_v1.9.0.sql líneas 928-958 (change armado-orden-por-escaneo de front-nexus)"
+      - table: e_plataforma.view_armado_orden_item
+        role: "Unidades a armar de cada orden: un renglón por artículo simple o por componente de combo de la NP vigente, sin servicios ni genéricos (ntipostock 4 y 5). bejemplar = requiere ejemplar (ntipostock 2 o 3)"
+        key_columns: [nordenplataforma, nnotapedido, nitem, nitemcombo, narticulo, narticulocombo, bejemplar, ncantidad, ncantidadarmada, ncantidadremitida, ncantidadfacturada, nejemplar]
+        notes: "Una orden con ncantidadarmada > 0 se considera armada: bloquea cancelar su recolección o quitarla de ella. Deshacer el armado no se permite si el renglón ya tiene remito o factura."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/inc/010_v1.9.0.sql líneas 960-1017"
+
+      # --- Listado de órdenes (estado efectivo) ---
+      - table: e_plataforma.view_orden_plataforma
+        role: "Listado de órdenes (/api/ordenPlataforma/listadoOrdenes): una fila por orden con cuenta, plataforma, NP vigente, tipo de logística, fecha de entrega, recolección, unidades a armar/armadas y estado efectivo"
+        key_columns: [nordenplataforma, ncuentaxplataforma, vcuenta, nplataforma, vplataforma, vidplataforma, vidorden, vidpack, nnotapedido, vnumeronotapedido, vtipologistica, tsorden, ftotal, ncantidad, dentrega, nestadoorden, vestadoorden, vestadoplataforma, bwarning, ncliente, nestadoordenefectivo, vestadoordenefectivo, videntificadorrecoleccion, ncantidadarmar, ncantidadarmada]
+        notes: "Excluida a propósito: vcomprador (nombre del comprador). Usar nestadoordenefectivo para filtrar por estado. vtipologistica = 'fulfillment' son órdenes Full: solo visualización, sin cobertura ni acciones (ORDENES_PLATAFORMA.md §4.10)."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/inc/010_v1.9.0.sql líneas 1019-1101; ORDENES_PLATAFORMA.md §5"
+
+      # --- Externas (cuenta y plataforma) ---
+      - table: e_plataforma.cuenta_x_plataforma
+        role: "Cuenta de plataforma de la orden y de cada ítem de recolección (detalle en integracion_ecommerce)"
+        key_columns: [ncuentaxplataforma, nplataforma, vcuenta, nrazonsocial, nlistaprecio, bhabilitado]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02"
+      - table: e_plataforma.plataforma_integrada
+        role: "Catálogo de plataformas (1 MercadoLibre, 2 QLoud, 3 TiendaNube)"
+        key_columns: [nplataforma, vnombre, vidplataforma, bhabilitado]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02"
 
   envio_comprobantes:
     description: "envío de comprobantes (Presupuesto, Factura de Venta, Remito de Venta, Nota de Crédito de Venta, Tarea de Servicio Técnico) por email desde un único endpoint, resolviendo el remitente configurable por razón social y documento"
@@ -591,29 +772,21 @@ circuits:
         key_columns: [nrazonsocial, vemail]
         source: "ENVIO_COMPROBANTES_EMAIL.md; DDL completo ya relevado en el circuito venta (docs/diagramas/carrito_ddl.sql)"
       - table: stock.presupuesto
-        role: "Comprobante soportado por /api/email/sendComprobante (origen del PDF adjunto); ya documentado en detalle en el circuito venta, no se repite acá"
-        key_columns: []
-        status: needs_review
-        notes: "Separada de la entrada conjunta original 'stock.presupuesto / stock.factura_venta / stock.remito / stock.nota_credito', que agrupaba los 4 comprobantes con remitente configurable soportados por sendComprobante (a diferencia de servicio_tecnico.tarea, que no lo tiene)."
-        source: "ENVIO_COMPROBANTES_EMAIL.md §1; ver circuito venta para el DDL completo"
+        role: "Comprobante soportado por /api/email/sendComprobante (origen del PDF adjunto); detalle completo en el circuito venta"
+        key_columns: [npresupuesto, vnumero, dfecha, ncliente, nrazonsocial, ndeposito]
+        source: "ENVIO_COMPROBANTES_EMAIL.md §1; columnas confirmadas por introspección de la base viva (pg_catalog) — 2026-10-18"
       - table: stock.factura_venta
-        role: "Comprobante soportado por /api/email/sendComprobante (origen del PDF adjunto); ya documentado en detalle en el circuito venta, no se repite acá"
-        key_columns: []
-        status: needs_review
-        notes: "Separada de la entrada conjunta original 'stock.presupuesto / stock.factura_venta / stock.remito / stock.nota_credito', que agrupaba los 4 comprobantes con remitente configurable soportados por sendComprobante (a diferencia de servicio_tecnico.tarea, que no lo tiene)."
-        source: "ENVIO_COMPROBANTES_EMAIL.md §1; ver circuito venta para el DDL completo"
+        role: "Comprobante soportado por /api/email/sendComprobante (origen del PDF adjunto); detalle completo en el circuito venta"
+        key_columns: [nfacturaventa, vnumero, dfecha, ncliente, nrazonsocial, ndeposito]
+        source: "ENVIO_COMPROBANTES_EMAIL.md §1; columnas confirmadas por introspección de la base viva (pg_catalog) — 2026-10-18"
       - table: stock.remito
-        role: "Comprobante soportado por /api/email/sendComprobante (origen del PDF adjunto); ya documentado en detalle en el circuito venta, no se repite acá"
-        key_columns: []
-        status: needs_review
-        notes: "Separada de la entrada conjunta original 'stock.presupuesto / stock.factura_venta / stock.remito / stock.nota_credito', que agrupaba los 4 comprobantes con remitente configurable soportados por sendComprobante (a diferencia de servicio_tecnico.tarea, que no lo tiene)."
-        source: "ENVIO_COMPROBANTES_EMAIL.md §1; ver circuito venta para el DDL completo"
+        role: "Comprobante soportado por /api/email/sendComprobante (origen del PDF adjunto); detalle completo en el circuito venta"
+        key_columns: [nremito, vnumero, dfecha, nentidadcp, nrazonsocial, ndeposito]
+        source: "ENVIO_COMPROBANTES_EMAIL.md §1; columnas confirmadas por introspección de la base viva (pg_catalog) — 2026-10-18"
       - table: stock.nota_credito
-        role: "Comprobante soportado por /api/email/sendComprobante (origen del PDF adjunto); ya documentado en detalle en el circuito venta, no se repite acá"
-        key_columns: []
-        status: needs_review
-        notes: "Separada de la entrada conjunta original 'stock.presupuesto / stock.factura_venta / stock.remito / stock.nota_credito', que agrupaba los 4 comprobantes con remitente configurable soportados por sendComprobante (a diferencia de servicio_tecnico.tarea, que no lo tiene)."
-        source: "ENVIO_COMPROBANTES_EMAIL.md §1; ver circuito venta para el DDL completo"
+        role: "Comprobante soportado por /api/email/sendComprobante (origen del PDF adjunto); detalle completo en el circuito venta"
+        key_columns: [nnotacredito, vnumero, dfecha, nentidadcp, nrazonsocial, ndeposito]
+        source: "ENVIO_COMPROBANTES_EMAIL.md §1; columnas confirmadas por introspección de la base viva (pg_catalog) — 2026-10-18"
       - table: servicio_tecnico.tarea
         role: "Único comprobante soportado sin remitente configurable (no está en administracion.documentos_sistema); siempre usa el fallback"
         key_columns: [ntarea]
@@ -624,31 +797,168 @@ circuits:
     docs:
       - Popey-ERP/docs/MODULO_USUARIO.md
     naming_note: >
-      ATENCIÓN: el rol de BD read-only del MCP (mcp_popey_ro) NO tiene acceso
-      al schema `seguridad` (ahí viven password, hash de recuperación y códigos
-      2FA). Las tablas seguridad.* de abajo documentan el MODELO del flujo de
-      usuario, pero NO son consultables desde el MCP: una query contra ellas
-      devuelve "permission denied for schema seguridad". Hoy la resolución
-      id -> nombre solo es posible dentro de la app (acceso completo a
-      seguridad); el MCP no expone una vista para eso.
+      El schema `seguridad` es consultable desde el MCP a propósito, para
+      resolver id de usuario -> nombre/rol (por ejemplo, el vendedor de un
+      comprobante). Solo se exponen las key_columns de abajo: password, hash
+      de recuperación, códigos 2FA, estado de bloqueo y fecha de nacimiento
+      están excluidos acá y, además, el rol de BD mcp_popey_ro solo tiene
+      SELECT por columna sobre estas mismas columnas
+      (scripts/create_readonly_role.sql). Por eso un SELECT * sobre estas
+      tablas devuelve "permission denied": hay que nombrar las columnas.
       Corrección de un error frecuente: seguridad.usuario NO tiene FK a
       public.persona; el nombre vive directo en usuario.vnombre/vapellido.
       nusuariocreador es seguridad.usuario.nusuario, NO public.persona.npersona.
     tables:
       - table: seguridad.usuario
-        role: "Maestro de usuarios. PK nusuario. El nombre vive DIRECTO acá (vnombre, vapellido) — no hay FK a persona. nusuariocreador acá es autorreferencia (qué usuario lo creó). NO consultable por el MCP (schema seguridad sin grant); documentada solo como modelo."
-        key_columns: [nusuario, vnombre, vapellido, vusuario, vemail, bhabilitado]
-        source: "introspección de la base viva (information_schema) — 2026-10-01"
-        notes: "Columnas sensibles que por eso no se exponen al rol read-only: vpassword, vhashrecupclave, vcodigo2fa y timestamps de 2FA/bloqueo."
+        role: "Maestro de usuarios. PK nusuario. El nombre vive DIRECTO acá (vnombre, vapellido) — no hay FK a persona. nusuariocreador acá es autorreferencia (qué usuario lo creó)."
+        key_columns: [nusuario, vnombre, vapellido, vusuario, vemail, bhabilitado, tshabilitado, nusuariocreador, tscreado, tsactualizado]
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18"
+        notes: "Excluidas a propósito: credenciales (vpassword, vhashrecupclave, tsexpiracionhash, tsultimaactpassword), 2FA (vcodigo2fa, bcodigo2favalidado, bautenticacion2fa y sus timestamps), estado de bloqueo (bbloqueoauto, tsbloqueoauto), dato personal (dfechanacimiento) y jnavegabilidad."
       - table: seguridad.usuarioxrol
-        role: "Asignación N:M usuario↔rol, con alcance por depósito. Una fila por (nusuario, nrol, ndeposito): un mismo rol se repite una vez por depósito asignado. 'Es vendedor' = existe al menos una fila con nrol = 4. NO consultable por el MCP."
+        role: "Asignación N:M usuario↔rol, con alcance por depósito. Una fila por (nusuario, nrol, ndeposito): un mismo rol se repite una vez por depósito asignado. 'Es vendedor' = existe al menos una fila con nrol = 4."
         key_columns: [nusuarioxrol, nusuario, nrol, ndeposito]
         source: "introspección de la base viva (FKs: usuarioxrol_usuario, usuarioxrol_rol, usuarioxrol_ndeposito_fkey) — 2026-10-01"
       - table: seguridad.rol
-        role: "Catálogo de roles. nrol -> vrol: 1 ADMINISTRADOR, 2 GERENTE, 3 ENCARGADO, 4 VENDEDOR, 5 CONTADOR, 6 SOPORTE, 7 SERVICIO TECNICO, 8 DISTRIBUIDOR, 9 CONSULTOR, 10 FULL, 11 CAJERO, 12 DESPACHO. NO consultable por el MCP."
+        role: "Catálogo de roles. nrol -> vrol: 1 ADMINISTRADOR, 2 GERENTE, 3 ENCARGADO, 4 VENDEDOR, 5 CONTADOR, 6 SOPORTE, 7 SERVICIO TECNICO, 8 DISTRIBUIDOR, 9 CONSULTOR, 10 FULL, 11 CAJERO, 12 DESPACHO."
         key_columns: [nrol, vrol]
         source: "introspección de la base viva (seguridad.rol) — 2026-10-01"
       - table: seguridad.view_usuario
-        role: "Vista COMPLETA de usuario que usa la app (no el MCP): expone vfullname ('Apellido, Nombre') y flags brol* por rol, pero TAMBIÉN vpassword — por eso el MCP NO la usa ni tiene grant sobre ella. Referencia del modelo de cómo la app resuelve id -> nombre."
-        key_columns: [nusuario, vfullname, vrol, nroles, bhabilitado, brolvendedor]
-        source: "pg_get_viewdef('seguridad.view_usuario') — 2026-10-01"
+        role: "Vista COMPLETA de usuario que usa la app: expone vfullname ('Apellido, Nombre') y flags brol* por rol, pero TAMBIÉN vpassword: el MCP solo expone (y el rol de BD solo tiene grant sobre) las columnas de abajo. Es la forma más directa de resolver id -> nombre ('Apellido, Nombre')."
+        key_columns: [nusuario, vnombre, vapellido, vfullname, vusuario, vemail, bhabilitado, vhabilitado, vrol, nroles, broladmin, brolgerente, brolencargado, brolvendedor, brolcontador, brolsoporte, brolserviciotecnico, broldistribuidor, brolconsultor, brolfull, brolcajero, broldespacho]
+        source: "pg_get_viewdef('seguridad.view_usuario') — 2026-10-01; columnas confirmadas por introspección de la base viva (pg_catalog) — 2026-10-18"
+        notes: "Excluidas a propósito: vpassword, bbloqueoauto, bautenticacion2fa y dfechanacimiento."
+
+  posventa:
+    description: "circuito de Posventa, el espejo hacia atrás de la venta: Nota de Posventa (intención: qué renglones de Remito de venta vuelven, cuánto y por qué motivo), Nota de Reingreso (hecho físico: entrada de stock al depósito, con imputación a la Nota de Pedido de lo remitido y no facturado) y Nota de Crédito generada desde la Posventa (efecto financiero/AFIP, sin stock); incluye estados, comentarios, cliente de contacto y permiso de acceso"
+    docs:
+      - Popey-ERP/docs/POSVENTA_REINGRESO_NOTA_CREDITO.md
+    naming_note: >
+      POSVENTA_REINGRESO_NOTA_CREDITO.md es la referencia vigente;
+      CIRCUITO_POSVENTA.md es la bitácora histórica (renames devolución →
+      posventa y Nota de Devolución → Nota de Reingreso) y no se toma como
+      fuente de columnas. DDL base en db/deployed/009_v1.8.0.sql (bloques
+      "Circuito de Posventa" y "Nota de Reingreso"); nclientecontacto y
+      ctipocomprobantenotacredito se agregan en db/deployed/009_v1.8.1.sql y
+      venta.relacion_notareingreso_notapedidoitem en db/deployed/010_v1.8.1.sql.
+      Enganches: la Posventa parte del renglón de Remito de venta
+      (articulos_posventa.nitemremito → stock.remitoxitem.nitem); Reingreso y
+      NC se enganchan al ítem de Posventa por narticuloposventa (en la NC,
+      stock.notacreditoxitem.narticuloposventa, nullable). Ningún saldo tiene
+      contador físico salvo nota_pedido_item.ncantidadreingresada: disponible,
+      pendiente de reingresar y acreditado se calculan con SUM() (doc §5).
+      El estado de la Posventa solo lo mueve el Reingreso; emitir la NC no lo
+      cambia. Datos personales del cliente (nombre, CUIT/DNI, email,
+      teléfono) y tsv_busqueda se excluyen a propósito de key_columns; el
+      cliente se resuelve por ncliente / nclientecontacto. Las tablas de NC
+      (stock.nota_credito y satélites) están en el circuito venta.
+    tables:
+      # --- Nota de Posventa ---
+      - table: venta.nota_posventa
+        role: "Cabecera de la Nota de Posventa (NPV…): la intención de devolución/cambio sobre uno o más Remitos de venta. No mueve stock ni tiene efecto financiero. nsucursal = depósito de la sesión al crearla; nremitos = PKs de los Remitos de la nota (jsonb denormalizado)"
+        key_columns: [nnotaposventa, ncliente, nrazonsocial, nusuariocreador, nsucursal, tscreado, tnota, vnumero, nestadoposventa, nremitos, tremitosnumero, nclientecontacto]
+        notes: "Excluidas a propósito: vcliente, vcui, ncui (snapshot del cliente copiado del primer Remito) y tsv_busqueda. nclientecontacto (→ public.entidadcp) es la persona con la que se habla por la posventa, sin relación con ncliente. Filtrar por Remito con nremitos (jsonb, índice GIN)."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; POSVENTA_REINGRESO_NOTA_CREDITO.md §3.2; nclientecontacto en db/deployed/009_v1.8.1.sql línea 41"
+      - table: venta.estado_posventa
+        role: "Catálogo de estado de la Posventa: 1 Abierta, 2 Procesando, 3 Cerrado, 4 Cancelado (App\\Constant\\EstadoPosventa). Abierta → Procesando por Reingreso parcial o por comentario; Cerrado cuando a ningún ítem le queda acción; Cancelado solo sin comprobantes"
+        key_columns: [nestadoposventa, vestadoposventa, bhabilitado]
+        source: "introspección de la base viva (venta.estado_posventa) — 2026-11-02; POSVENTA_REINGRESO_NOTA_CREDITO.md §3.1 y §4.1"
+      - table: venta.articulos_posventa
+        role: "Ítems de la Posventa: renglón de Remito que vuelve, cantidad y motivo. narticuloposventa es la clave que usan Reingreso y NC. Un mismo nitemremito puede repetirse en varias líneas (ej.: 2 Devolución + 1 Cambio); el combo va entero en una línea"
+        key_columns: [narticuloposventa, nnotaposventa, nitemremito, ncantidad, nmotivo]
+        notes: "Disponible para Posventa por renglón de Remito = remitoxitem.ncantidad − Σ articulos_posventa.ncantidad de notas no canceladas (doc §5.1)."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; POSVENTA_REINGRESO_NOTA_CREDITO.md §3.3"
+      - table: stock.motivo_nota_credito_venta
+        role: "Catálogo de motivos reutilizado por la Posventa (articulos_posventa.nmotivo): Servicio Técnico, Otros, Devolución, Error de Facturación, Cambio, Garantía"
+        key_columns: [nmotivonotacreditoventa, vmotivonotacreditoventa, bhabilitado]
+        source: "introspección de la base viva (stock.motivo_nota_credito_venta) — 2026-11-02"
+      - table: venta.nota_posventa_comentario
+        role: "Comentarios de seguimiento de la Posventa, con foto del estado de la nota al comentar. Comentar una nota Abierta la pasa a Procesando"
+        key_columns: [nnotaposventacomentario, nnotaposventa, nusuariocreador, tscreado, tcomentario, nestadoposventa]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; POSVENTA_REINGRESO_NOTA_CREDITO.md §3.4"
+      - table: venta.view_nota_posventa
+        role: "Listado y consulta de Notas de Posventa: cabecera + estado, sucursal, empresa, usuario creador con nombre resuelto y agregados de ítems"
+        key_columns: [nnotaposventa, vnumero, ncliente, nrazonsocial, vempresa, nusuariocreador, vusuariocreador, tscreado, dfecha, dfullfecha, dfullcreadahora, tnota, nestadoposventa, vestadoposventa, nremitos, tremitosnumero, nitems, ncantidadtotal, nsucursal, vsucursal, nclientecontacto]
+        notes: "Excluidas a propósito: vrazonsocial, vcliente, vcui, ncui, vemail, vtelefono, vclientecontacto (datos del cliente) y tsv_busqueda."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; POSVENTA_REINGRESO_NOTA_CREDITO.md §3.8"
+      - table: venta.view_articulos_posventa
+        role: "Ítems de la Posventa con el renglón de Remito de origen: artículo, Remito, motivo, cantidad remitida, marca, serial y tipo de comprobante de la Factura (decide el tipo de NC)"
+        key_columns: [narticuloposventa, nnotaposventa, nitemremito, ncantidad, narticulo, varticulo, vcodeart, nremito, vnumeroremito, nmotivo, vmotivo, ncantidadremitida, vpartnumber, vmarca, vserialnumber, ctipocomprobantenotacredito]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; ctipocomprobantenotacredito en db/deployed/009_v1.8.1.sql línea 22"
+      - table: venta.view_nota_posventa_comentario
+        role: "Comentarios con usuario resuelto a nombre y estado de la nota al comentar"
+        key_columns: [nnotaposventacomentario, nnotaposventa, nusuariocreador, vusuariocreador, tscreado, dfullcreadahora, tcomentario, nestadoposventa, vestadoposventa]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02"
+      - table: venta.view_remito_comprobantes
+        role: "Selector de Remitos del alta de Posventa: una fila por Remito con las Facturas y NP asociadas"
+        key_columns: [nremito, vnumero, vcomprobante, nentidadcp, dfecha, dfullfecha, fechayhora, ndeposito, vdeposito, nestado, vestadoremito, vtipocomprobante, ctiporemito, nrazonsocial, vempresa, tfacturasasociadas, tnotaspedidoasociadas, jfacturasasociadas, jnotaspedidoasociadas, vtipocomprobanteabr]
+        notes: "Excluidas a propósito: ventidadcp, vrazonsocial, vcui, ncui (datos del cliente) y tsv_busqueda."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; POSVENTA_REINGRESO_NOTA_CREDITO.md §3.8"
+
+      # --- Nota de Reingreso (mueve stock) ---
+      - table: venta.nota_reingreso
+        role: "Cabecera de la Nota de Reingreso (NR…): el hecho físico de lo que volvió y a qué depósito; siempre contra una Posventa. Genera un movimiento de Entrada Directa (nmovimiento, 1:1). bhabilitado: true Confirmado / false Anulado (anulación no implementada)"
+        key_columns: [nnotareingreso, nnotaposventa, nusuariocreador, ndeposito, tscreado, tnota, vnumero, bhabilitado, nmovimiento]
+        notes: "ndeposito es donde se recibe y puede diferir de nota_posventa.nsucursal."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; POSVENTA_REINGRESO_NOTA_CREDITO.md §3.5 y §10"
+      - table: venta.nota_reingreso_item
+        role: "Ítems del Reingreso: qué ítem de Posventa se efectiviza y cuánto (puede ser parcial), con el ejemplar puntual (serializados) o el componente del combo (nremitoxitemcombo)"
+        key_columns: [nnotareingresoitem, nnotareingreso, narticuloposventa, ncantidad, nejemplar, nremitoxitemcombo]
+        notes: "Pendiente de reingresar = articulos_posventa.ncantidad − Σ reingresado de Reingresos bhabilitado; en combos, MIN por componente (doc §5.2)."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; POSVENTA_REINGRESO_NOTA_CREDITO.md §3.6"
+      - table: venta.view_nota_reingreso
+        role: "Listado/detalle de Reingresos: + número de Posventa, usuario y depósito con nombre, estado Confirmado/Anulado y agregados de ítems"
+        key_columns: [nnotareingreso, vnumero, nnotaposventa, vnumeroposventa, nusuariocreador, vusuariocreador, tscreado, dfecha, dfullfecha, dfullcreadahora, tnota, bhabilitado, vestadoreingreso, ndeposito, vdeposito, nmovimiento, nitems, ncantidadtotal]
+        notes: "Excluida a propósito: vcliente (nombre del cliente de la Posventa)."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02"
+      - table: venta.view_nota_reingreso_item
+        role: "Ítems del Reingreso con artículo del Remito, motivo de la Posventa, serial y artículo del componente del combo"
+        key_columns: [nnotareingresoitem, nnotareingreso, narticuloposventa, nitemremito, narticulo, varticulo, vcodeart, ncantidad, nmotivo, vmotivo, nejemplar, vserialnumber, nremitoxitemcombo, narticulocombo, varticulocombo, vcodeartcombo]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02"
+      - table: venta.relacion_notareingreso_notapedidoitem
+        role: "Imputación del Reingreso a la Nota de Pedido: lo reingresado de un renglón remitido y no facturado deja de estar pendiente de facturar (suma a nota_pedido_item.ncantidadreingresada). Camino: ítem de Posventa → nitemremito → relacion_remitoxitem_notapedidoitem → ítem de NP"
+        key_columns: [nrelacionnotareingresonotapedidoitem, nnotareingreso, narticuloposventa, nitemnotapedido, ncantidad]
+        notes: "Solo se imputa a ítems de NP con ncantidadfacturada = 0. Si volvió todo y no se facturó nada, la NP queda Cancelado."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; db/deployed/010_v1.8.1.sql línea 435; POSVENTA_REINGRESO_NOTA_CREDITO.md §10.7"
+      - table: venta.nota_pedido_item
+        role: "Renglón de NP afectado por la Posventa: ncantidadreingresada (Reingreso de lo no facturado) y ncantidadacreditada (NC de lo facturado y no remitido). Detalle completo en el circuito venta"
+        key_columns: [nitem, nnotapedido, narticulo, ncantidad, ncantidadremitida, ncantidadfacturada, ncantidadacreditada, ncantidadreingresada]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; CIRCUITO_NP_REMITO_FACTURA.md (ncantidadacreditada 2026-09-28, ncantidadreingresada change nota-pedido-reingreso-sin-facturar)"
+      - table: stock.movimiento_deposito
+        role: "Movimiento de Entrada Directa generado por cada Nota de Reingreso (nota_reingreso.nmovimiento); es el que mueve el stock (detalle en importacion_articulos / MODULO_STOCK_ARTICULOS.md)"
+        key_columns: [nmovimientodeposito, ndepositoorigen, ndepositodestino, cestadomov, ntipomov, tnota]
+        source: "introspección de la base viva (pg_catalog) — 2026-10-18; POSVENTA_REINGRESO_NOTA_CREDITO.md §10.3"
+      - table: stock.movimientodepositoxarticulo
+        role: "Detalle del movimiento de Entrada Directa del Reingreso: una línea por ejemplar o la cantidad a granel"
+        key_columns: [nmovimientodepositoxarticulo, narticulo, nmovimiento, nejemplar, dcantidad]
+        source: "db/initial/schema_stock.sql líneas 454-478 (ya relevada en importacion_articulos)"
+
+      # --- Nota de Crédito desde la Posventa ---
+      - table: stock.notacreditoxitem
+        role: "Ítems de la NC; narticuloposventa (nullable, FK fk_notacreditoxitem_articuloposventa a venta.articulos_posventa) marca que el ítem de Posventa ya tiene NC y es la única fuente de verdad de eso. NULL en NC de la pantalla vieja. nfacturaxitem = renglón de Factura acreditado"
+        key_columns: [nnotacreditoxitem, nnotacredito, nfacturaxitem, ncantidad, ftotal, fpreciounitario, ndescuento, vcodigo, vdescripcion, narticuloposventa]
+        notes: "Acreditado por renglón de Factura = Σ notacreditoxitem.ncantidad de todas las NC, de cualquier origen (doc §5.3). §2 del doc dice 'sin FK', pero §3.7 y la base viva (pg_constraint, 2026-11-02) confirman que la FK existe."
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; POSVENTA_REINGRESO_NOTA_CREDITO.md §3.7"
+      - table: venta.nota_posventa_nota_credito
+        role: "Relación N:M cabecera Posventa ↔ Nota de Crédito (incluye la NC libre creada con nnotaposventa). Las NC anteriores al change solo tienen el vínculo por ítem: toda lectura de 'NC de la Posventa' debe unir ambos vínculos"
+        key_columns: [nnotaposventa, nnotacredito, nusuariocreador, tscreado]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; POSVENTA_REINGRESO_NOTA_CREDITO.md §3.7.1"
+      - table: stock.nota_credito
+        role: "Cabecera de la NC emitida desde la Posventa (ctiponotacredito = 'FV'); detalle completo en el circuito venta"
+        key_columns: [nnotacredito, nentidadcp, ndeposito, corigen, ctiponotacredito, ncomprobanteorigen, nmotivo, vafip_cae, vnumero]
+        source: "ya relevada en el circuito venta (introspección 2026-10-18)"
+
+      # --- Externas del origen (Remito de venta) ---
+      - table: stock.remitoxitem
+        role: "Renglón de Remito de venta del que parte cada ítem de Posventa (articulos_posventa.nitemremito)"
+        key_columns: [nitem, nremito, narticulo, ncantidad, nejemplar, nfactura]
+        source: "ya relevada en el circuito venta"
+      - table: stock.remitoxitemcombo
+        role: "Componente de combo remitido; el Reingreso de un combo se registra por componente (nota_reingreso_item.nremitoxitemcombo)"
+        key_columns: [nremitoxitemcombo, nitem, nremito, narticulo, ncantidad, nejemplar]
+        source: "ya relevada en el circuito venta"
+
+      # --- Permiso ---
+      - table: administracion.permiso_notas_posventa
+        role: "Permiso de acceso a la pantalla de Notas de Posventa: la presencia de una fila para el usuario = tiene permiso (viaja en sesión como permisoNotasPosventa)"
+        key_columns: [npermisonotasposventa, nusuario, nusuariocreador, tscreado]
+        source: "introspección de la base viva (pg_catalog) — 2026-11-02; POSVENTA_REINGRESO_NOTA_CREDITO.md §3.9 y §13"

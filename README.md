@@ -1,248 +1,124 @@
-# MCP-Popey
+# MCP Popey
 
-Servidor MCP de consulta de solo lectura sobre la base de Popey ERP,
-organizada por **circuitos de negocio** (venta, compras, stock, etc.).
-
-## Estructura
+Servidor MCP (Node.js + TypeScript) para consultar el ERP Popey en **solo lectura**,
+acotado por **rol** y aislado por **tenant**.
 
 ```
-config/circuits.yaml   # datos: qué circuitos existen, qué tablas tiene cada uno
-src/circuits.py        # puerta de entrada a circuits.yaml (lo lee una vez, lo cachea)
-src/db.py              # acceso a Postgres (pool, guardas de solo-lectura, chequeo de rol)
-src/server.py          # servidor MCP: junta circuits.py + db.py en 3 tools
-requirements.txt
+La IA solicita. Node.js valida y autoriza. El QueryCompiler decide el SQL.
+UserContext decide la base. PostgreSQL aplica la última barrera de solo lectura.
+
+query_sql (opt-in por rol): la IA escribe el SQL; PostgreSQL garantiza que sea lectura.
 ```
 
-`circuits.py` y `db.py` son independientes entre sí — ninguno de los dos sabe
-que el otro existe. `server.py` es el único módulo que conoce a ambos.
+## Tools
 
-## Requisitos
+| Tool | Input | Qué hace |
+|---|---|---|
+| `list_circuits` | — | Circuitos permitidos para el rol del usuario |
+| `describe_circuit` | `circuit` | Tablas, si son consultables y sus columnas permitidas |
+| `query_circuit` | `circuit, table, select, filters?, orderBy?, limit?` | Lectura vía DSL; el servidor compila el SQL |
+| `query_sql` | `sql` | SQL libre de **solo lectura**. Solo para roles con `sql: true` |
 
-- Python 3.12+ (probado con esa versión; no se testeó en versiones anteriores).
-- Acceso de red a una instancia de Postgres con el esquema de Popey ERP.
-- Un rol de Postgres con permiso de lectura sobre los schemas de los
-  circuitos. No hace falta que sea read-only: el servidor fuerza
-  transacciones `READ ONLY` (ver [Seguridad](#seguridad-y-política-de-acceso)).
+Los inputs son estrictos: mandar `databaseKey`, `schema`, `host`, `params`, etc. es un
+error de validación. Ninguna tool escribe datos.
 
-## Instalación
+### `query_sql`
+
+- Cualquier lectura: `SELECT`, `WITH`, joins, `GROUP BY`, ventanas, `EXPLAIN`,
+  `information_schema`. El servidor no parsea ni reescribe el SQL.
+- La lectura la garantiza PostgreSQL: una sola sentencia por llamada (cursor del
+  protocolo extendido, así `COMMIT; …` no sale de la transacción), `BEGIN READ ONLY … ROLLBACK`
+  y el rol `mcp_popey_ro` solo con `SELECT`.
+- Respuesta `{ columns, rows, rowCount, truncated }`. Como máximo `QUERY_SQL_MAX_ROWS`
+  filas (default 1000); `truncated: true` avisa que había más (agregar o paginar en SQL).
+- Timeout propio `QUERY_SQL_TIMEOUT_MS` (default 30000 ms). Comparte cuota de rate limit
+  con `query_circuit`.
+- Los errores de SQL traen `diagnostics` (`sqlState`, mensaje, `hint`, `position`) de
+  PostgreSQL. Los de conexión siguen siendo genéricos.
+- Auditoría: hash SHA-256 y largo del SQL, filas y `truncated`; nunca el texto del SQL.
+- Los permisos por circuito **no** acotan a `query_sql`: un rol habilitado lee todo lo que
+  `mcp_popey_ro` puede leer.
+
+Operadores de filtro: `eq neq gt gte lt lte in contains startsWith isNull isNotNull`.
+
+## Flujo
+
+```
+Bearer token → TokenVerifier → UserRepository → UserContext (server-side)
+query_circuit → Zod (estructura) → RateLimiter → QueryValidator (autorización)
+  → QueryCompiler (SQL parametrizado) → QueryExecutor(UserContext.databaseKey)
+  → DatabaseAdapter → Pool → PostgreSQL (BEGIN READ ONLY … ROLLBACK, rol mcp_popey_ro)
+query_sql → Zod ({ sql }) → RateLimiter → SqlExecutor(UserContext.databaseKey)
+  → DatabaseAdapter (cursor: una sentencia, maxRows + 1) → PostgreSQL (mismas barreras)
+```
+
+## Reglas de `circuits.yaml`
+
+- Tabla normal → consultable con sus `key_columns` reales.
+- `status` `needs_review` / `legacy` / desconocido → **no** consultable (deny by default).
+- `key_columns` documentales (`"columnas no confirmadas…"`, `"..."`) se descartan;
+  una tabla sin columnas confirmadas no es consultable.
+- `pending_columns` → solo informativas, nunca seleccionables/filtrables/ordenables.
+- La misma tabla en varios circuitos se evalúa **por circuito**; repetida dentro
+  de un circuito se fusiona (si una entrada está restringida, gana la restricción).
+- Schema `seguridad` → consultable a propósito solo por el circuito `usuario` (id → nombre/rol). Sus columnas sensibles (password, hashes, 2FA, bloqueo, fecha de nacimiento) no figuran en `key_columns` y el rol `mcp_popey_ro` solo tiene `SELECT` por columna sobre las seguras. `BLOCKED_SCHEMAS` queda vacío, pero el mecanismo sigue activo.
+- Un YAML estructuralmente inválido impide arrancar.
+
+## Permisos por rol
+
+`config/circuit-access.yaml` define, por rol, sus circuitos y si puede usar `query_sql`
+(`sql: true`, default `false`). Los permisos de Popey los define el negocio. Un rol que
+no figura no accede a nada, y la CLI solo crea usuarios con roles definidos. Formato en
+`config/circuit-access.example.yaml`.
+
+## Uso
 
 ```bash
-cd "MCP-Popey"
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+npm install
+cp .env.example .env          # completar credenciales del rol mcp_popey_ro
+npm run build
+npm start                     # http://127.0.0.1:3000/mcp
 ```
 
-> Si `python3 -m venv` falla por falta de `ensurepip`/`python3-venv`
-> (`ModuleNotFoundError: No module named 'ensurepip'`), instalá el paquete
-> del sistema (`sudo apt install python3.12-venv` en Debian/Ubuntu) o
-> bootstrapeá pip a mano dentro del venv con
-> [`get-pip.py`](https://bootstrap.pypa.io/get-pip.py).
-
-## Configuración (variables de entorno)
-
-| Variable | Obligatoria | Default | Descripción |
-|---|---|---|---|
-| `PGHOST` | No | `localhost` | Host de Postgres |
-| `PGPORT` | No | `5432` | Puerto de Postgres |
-| `PGDATABASE` | **Sí** | — | Nombre de la base |
-| `PGUSER` | **Sí** | — | Rol de conexión (se recomienda `mcp_popey_ro`, no es obligatorio) |
-| `PGPASSWORD` | **Sí** | — | Contraseña del rol |
-| `DB_POOL_MIN` | No | `1` | Conexiones mínimas del pool |
-| `DB_POOL_MAX` | No | `5` | Conexiones máximas del pool |
-| `DB_STATEMENT_TIMEOUT_MS` | No | `30000` | `statement_timeout` de sesión (ms), aplicado a cada conexión del pool al crearse |
-| `DB_DEFAULT_ROW_LIMIT` | No | `1000` | `LIMIT` que se agrega automáticamente a una query que no trae uno |
-| `MCP_HOST` | No | `0.0.0.0` | Dirección de escucha HTTP |
-| `MCP_PORT` | No | `8000` | Puerto HTTP interno del contenedor y puerto publicado en el host |
-| `MCP_ALLOWED_HOSTS` | No | `localhost:8000,127.0.0.1:8000` | Valores `Host` permitidos, separados por coma; agregar el dominio público del proxy |
-| `MCP_PUBLIC_URL` | No | `http://localhost:8000` | URL pública del servidor (la del proxy HTTPS) |
-| `MCP_USERS_FILE` | No | `config/users.yaml` (`/app/data/users.yaml` en Docker) | Archivo con los usuarios y el SHA-256 de sus tokens |
-
-Si falta alguna de las 3 obligatorias, el servidor no arranca y lo dice
-explícitamente (no hay fallback silencioso a valores de `psycopg2`).
-
-> **Historial**: hasta el 2026-09-23 el servidor exigía un rol read-only y
-> abortaba el arranque si el rol tenía permisos de escritura. Ese chequeo se
-> reemplazó por transacciones `READ ONLY` forzadas (ver
-> [Seguridad](#seguridad-y-política-de-acceso)).
-
-## Docker y transporte HTTP
+Usuarios (solo por consola; el token se muestra una vez, se guarda su SHA-256):
 
 ```bash
-cp .env.example .env
-# Editar .env con los datos reales de PostgreSQL.
-docker compose up -d --build
+node dist/cli/create-user.js --username juan --role ventas --database-key lang
+node dist/cli/create-user.js --username juan --rotate
+node dist/cli/create-user.js --username juan --disable
 ```
 
-El endpoint MCP local queda en `http://localhost:8000/mcp` usando
-**Streamable HTTP**. `PGHOST` debe ser accesible desde el contenedor; si
-PostgreSQL está en otra máquina, usar su hostname/IP privada. Si corre en el
-host Docker, configurar un nombre/IP alcanzable desde el contenedor en lugar
-de `localhost`.
+La CLI valida que el rol exista en `circuit-access.yaml`, que el `databaseKey`
+esté en `DATABASE_KEYS` y que el username sea único. Los cambios se aplican sin reiniciar.
 
-Compose publica el puerto solo en `127.0.0.1`; para acceso remoto, poner un
-proxy inverso en el servidor con TLS y autenticación. Agregar el hostname
-público (incluido el puerto si el proxy lo envía en `Host`) a
-`MCP_ALLOWED_HOSTS` en `.env`. El proxy tiene que usar HTTPS: el token
-viaja en cada request.
-
-### Usuarios y tokens
-
-Todo request exige `Authorization: Bearer <token>` (sin token → `401`). No
-hay roles ni registro público: los usuarios los crea **solo el admin** desde
-la consola del servidor, y no existe ningún endpoint HTTP para gestionarlos.
+Conectarlo a Claude Code:
 
 ```bash
-# Alta: imprime el token UNA sola vez, se le pasa al usuario
-docker compose exec popey-mcp python /app/scripts/create_user.py juan
-
-# Token perdido o comprometido: genera uno nuevo e invalida el anterior
-docker compose exec popey-mcp python /app/scripts/create_user.py juan --rotate
-
-# Revocar acceso
-docker compose exec popey-mcp python /app/scripts/create_user.py juan --disable
-```
-
-Solo se guarda el SHA-256 de cada token, en el volumen `mcp-users`
-(`/app/data/users.yaml`), así que sobrevive a recrear el contenedor. Los
-cambios se aplican sin reiniciar el servidor.
-
-### Conectarlo a Claude Code
-
-Con el token que te dio el admin:
-
-```bash
-claude mcp add --transport http popey-erp https://mcp.example.com/mcp \
+claude mcp add --transport http popey http://127.0.0.1:3000/mcp \
   --header "Authorization: Bearer <token>"
 ```
 
-O en `.mcp.json`:
+## Rol PostgreSQL
 
-```json
-{
-  "mcpServers": {
-    "popey-erp": {
-      "type": "http",
-      "url": "https://mcp.example.com/mcp",
-      "headers": { "Authorization": "Bearer <token>" }
-    }
-  }
-}
-```
-
-## Las 3 tools
-
-### `list_circuits()`
-Sin parámetros. Devuelve `[{name, description}, ...]` — los circuitos de
-negocio definidos en `circuits.yaml`.
-
-### `query_circuit(circuito, sql, params=None)`
-Ejecuta un **único `SELECT`** de solo lectura. `circuito` (ej. `"venta"`) es
-contexto informativo, no una restricción de acceso — ver política abajo.
-`params` son los parámetros de la query (lista para `%s`, dict para
-`%(nombre)s`); nunca interpolar valores directo en `sql`.
-
-Devuelve `{"rows": [...], "warnings": [...]}`.
-
-### `get_circuit_schema(circuito)`
-Junta la metadata de negocio de `circuits.yaml` (role, key_columns, source,
-status, notes, pending_columns) con las columnas reales de Postgres
-(`information_schema.columns`, acotado a las tablas del circuito) — pensado
-para que el modelo sepa qué puede pedir antes de armar el `sql` de
-`query_circuit`.
-
-## Seguridad y política de acceso
-
-Hay dos capas independientes, ninguna reemplaza a la otra:
-
-### 1. Transacción `READ ONLY` (barrera primaria)
-
-Cada query corre dentro de una transacción `READ ONLY` (`BEGIN READ ONLY`
-vía psycopg2 `set_session(readonly=True)`) que siempre termina en
-`ROLLBACK`, y cada conexión del pool arranca con
-`default_transaction_read_only=on`. Postgres rechaza cualquier escritura en
-esa transacción (`INSERT`/`UPDATE`/`DELETE`, DDL, `nextval`, funciones
-plpgsql que escriben), sin importar los permisos del rol. Al arrancar,
-`db.init_pool()` verifica que `transaction_read_only` quede en `on`; si no,
-aborta.
-
-Por eso `PGUSER` puede ser un rol con permisos de escritura. Igual, usar el
-rol read-only dedicado (`mcp_popey_ro`) suma una capa más y sigue siendo la
-opción recomendada.
-
-#### Creación del rol read-only (`mcp_popey_ro`)
-
-En el entorno de dev actual, Postgres corre en un contenedor Docker
-(`lang_docker_database_1`) **sin volumen persistente**: cada vez que se
-recrea el contenedor, se pierde el cluster entero, rol incluido. Por eso el
-rol read-only se recrea con un script versionado en vez de dejarlo como
-comandos sueltos:
+Por cada base de tenant:
 
 ```bash
-docker cp scripts/create_readonly_role.sql lang_docker_database_1:/tmp/
-docker exec -it lang_docker_database_1 \
-  psql -U langdev -d langdev -v ON_ERROR_STOP=1 \
-  -v ro_password='<elegir una password>' \
-  -f /tmp/create_readonly_role.sql
+psql -U <owner> -d <base> -v ON_ERROR_STOP=1 \
+  -v ro_password='<password>' -v owner_role='<owner>' \
+  -f scripts/create_readonly_role.sql
 ```
 
-Crea (o actualiza la password de) el rol `mcp_popey_ro` con `GRANT SELECT`
-únicamente sobre los schemas que aparecen en `config/circuits.yaml`
-(`administracion`, `compra`, `e_plataforma`, `mercado_libre`, `public`,
-`servicio_tecnico`, `stock`, `util`, `venta`) — no sobre todos los schemas
-de la base. Si `circuits.yaml` suma un circuito en un schema nuevo, hay que
-agregar ese schema a `scripts/create_readonly_role.sql` y volver a correrlo
-(los `GRANT` son idempotentes). Después de correrlo, poner
-`PGUSER=mcp_popey_ro` y esa misma password en `PGPASSWORD` del `.env`.
+Otorga solo `CONNECT`, `USAGE` y `SELECT`. En `seguridad` otorga `SELECT` **por columna**,
+solo sobre las columnas seguras del circuito `usuario` (sin password, hashes, 2FA, bloqueo
+ni fecha de nacimiento). Por eso `SELECT *` sobre esas tablas devuelve `permission denied`.
+La lista del script tiene que coincidir con `circuits.yaml`; un test unitario lo verifica.
 
-### 2. La guarda de código (segunda capa, defensa en profundidad)
+El script es idempotente: **re-ejecutalo en cada tenant** cada vez que cambie
+(por ejemplo, al sumar columnas a `seguridad` o un schema nuevo).
 
-Independientemente de la transacción, `db.py` valida cada SQL antes de mandarlo a
-Postgres:
-- tiene que empezar con `SELECT`;
-- una sola sentencia (rechaza `;` interno — bloquea múltiples sentencias);
-- sin palabras prohibidas en ningún lugar de la query (`INSERT`, `UPDATE`,
-  `DELETE`, `DROP`, `ALTER`, `CREATE`, `pg_sleep`, `dblink`, etc.). `SET`,
-  `RESET` y `set_config` también se bloquean porque son la vía para apagar
-  el modo read-only, e `INTO` porque `SELECT ... INTO` crea tablas.
+## Tests
 
-Un `DELETE`/`UPDATE` mandado a `query_circuit` se rechaza acá, en Python,
-antes de llegar a la base — no depende de que Postgres tire un error de
-permisos.
-
-### `circuits.yaml` es informativo, no una barrera de acceso
-
-Decisión explícita: el circuito pedido en `query_circuit` **nunca bloquea
-qué se puede leer**. Tres situaciones generan un aviso en `warnings` pero la
-query se ejecuta igual:
-
-- la tabla no pertenece al circuito pedido (pertenece a otro, o a ninguno);
-- la tabla está marcada `status: needs_review` en `circuits.yaml`;
-- la tabla está marcada `status: legacy` en `circuits.yaml`.
-
-**Única excepción bloqueante a esta política**: si `circuito` no es uno de
-los circuitos existentes (`list_circuits()`), `query_circuit` y
-`get_circuit_schema` rechazan antes de ejecutar nada. No es un problema de
-status de una tabla — es la ausencia total de un circuito de referencia:
-sin eso no hay contra qué avisar, no hay "role/notes" que citar en un
-warning informativo. Por eso ahí sí se corta.
-
-### Auditoría
-
-Cada llamada a `query_circuit` que llega a ejecutarse loguea (vía el logger
-`popey-mcp.server`, nivel `WARNING` si hubo algún aviso, `INFO` si no): el
-circuito pedido, el SQL final ejecutado (con el `LIMIT` ya aplicado) y las
-tablas que generaron warning. **Limitación conocida**: los intentos
-rechazados por la guarda de código (SELECT-only) o que fallan contra
-Postgres no quedan auditados — el log se emite justo antes del `return`, y
-una excepción corta el flujo antes de llegar ahí.
-
-## Troubleshooting
-
-- **"Faltan variables de entorno obligatorias para conectar a Postgres"** —
-  falta `PGDATABASE`, `PGUSER` o `PGPASSWORD`.
-- **"La transacción no quedó en modo READ ONLY"** — Postgres no aplicó
-  `transaction_read_only=on`; revisar la versión de psycopg2 o la
-  configuración del servidor (no hay bypass de este chequeo).
-- **`ModuleNotFoundError` al importar `mcp`, `sqlglot` o `psycopg2`** —
-  faltó `pip install -r requirements.txt` (o el venv no está activado).
+```bash
+npm test                  # unitarios + e2e MCP por HTTP (sin base)
+npm run test:integration  # PostgreSQL efímero con Docker (testcontainers)
+```
