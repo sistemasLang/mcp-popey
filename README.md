@@ -77,7 +77,7 @@ no figura no accede a nada, y la CLI solo crea usuarios con roles definidos. For
 npm install
 cp .env.example .env          # completar credenciales del rol mcp_popey_ro
 npm run build
-npm start                     # http://127.0.0.1:3000/mcp
+npm start                     # http://127.0.0.1:3030/mcp
 ```
 
 Usuarios (solo por consola; el token se muestra una vez, se guarda su SHA-256):
@@ -94,7 +94,7 @@ esté en `DATABASE_KEYS` y que el username sea único. Los cambios se aplican si
 Conectarlo a Claude Code:
 
 ```bash
-claude mcp add --transport http popey http://127.0.0.1:3000/mcp \
+claude mcp add --transport http popey http://127.0.0.1:3030/mcp \
   --header "Authorization: Bearer <token>"
 ```
 

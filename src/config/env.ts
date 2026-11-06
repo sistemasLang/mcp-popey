@@ -12,7 +12,7 @@ const positiveInt = (fallback: number) => z.coerce.number().int().positive().def
 
 const EnvSchema = z.object({
   MCP_HOST: z.string().default('127.0.0.1'),
-  MCP_PORT: z.coerce.number().int().min(0).max(65535).default(3000),
+  MCP_PORT: z.coerce.number().int().min(0).max(65535).default(3030),
   CIRCUITS_FILE: z.string().default('config/circuits.yaml'),
   CIRCUIT_ACCESS_FILE: z.string().default('config/circuit-access.yaml'),
   USERS_FILE: z.string().default('data/users.yaml'),

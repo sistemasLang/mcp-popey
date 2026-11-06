@@ -10,7 +10,7 @@ La configuración SHALL leerse de variables de entorno (con `.env` opcional en e
 
 #### Scenario: Defaults
 - **WHEN** no se define ninguna variable opcional
-- **THEN** se usan `MCP_HOST=127.0.0.1`, `MCP_PORT=3000`, `CIRCUITS_FILE=config/circuits.yaml`, `CIRCUIT_ACCESS_FILE=config/circuit-access.yaml`, `USERS_FILE=data/users.yaml` y los límites de consulta por defecto
+- **THEN** se usan `MCP_HOST=127.0.0.1`, `MCP_PORT=3030`, `CIRCUITS_FILE=config/circuits.yaml`, `CIRCUIT_ACCESS_FILE=config/circuit-access.yaml`, `USERS_FILE=data/users.yaml` y los límites de consulta por defecto
 
 #### Scenario: Límites incoherentes
 - **WHEN** `QUERY_DEFAULT_ROWS=600` y `QUERY_MAX_ROWS=500`

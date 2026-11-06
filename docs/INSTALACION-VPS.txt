@@ -1,0 +1,474 @@
+=====================================================================
+ MCP POPEY - INSTALACION EN VPS (nginx + pm2, sin Docker)
+=====================================================================
+
+Probado sobre: Ubuntu 24.04, 1 vCPU, 1 GB RAM, con otro proyecto Node
+corriendo en la misma VPS bajo pm2 y nginx.
+
+Consumo del MCP en ejecucion: ~100 MB de RAM, CPU casi nula en reposo.
+
+Principio de esta guia: TODO lo que se instala queda aislado y listado,
+para no tocar el resto de la VPS y poder desinstalarlo por completo
+(ver seccion 9).
+
+Cada bloque de comandos indica DONDE se ejecuta:
+  [VPS]  en la VPS que va a alojar el MCP
+  [PC]   en la computadora local (solo Opcion B)
+  [DB]   en el servidor PostgreSQL
+  [DNS]  en el panel del proveedor de dominio
+Antes de ejecutar, mirar el prompt de la terminal para confirmar en que
+maquina se esta.
+
+
+---------------------------------------------------------------------
+ 0. QUE MODIFICA ESTA INSTALACION
+---------------------------------------------------------------------
+
+En la VPS:
+  /opt/mcp-popey/                         app, Node 22 propio, cache de
+                                          npm, logs, datos y (Opcion A)
+                                          deploy key de GitHub
+  /etc/nginx/sites-available/mcp-popey    sitio de nginx
+  /etc/nginx/sites-enabled/mcp-popey      symlink al sitio
+  /etc/letsencrypt/...                    certificado de mcp.<dominio>
+  pm2: proceso "mcp-popey"
+
+Fuera de la VPS:
+  DNS: registro A de <DOMINIO> apuntando a la IP de la VPS
+  Servidor de base de datos: rol mcp_popey_ro, regla en pg_hba.conf,
+    regla de firewall para la IP de la VPS
+  GitHub (solo Opcion A): deploy key en el repo sistemasLang/mcp-popey
+
+NO se toca: el Node del sistema, ~/.ssh, ~/.npm, pm2 (solo se agrega un
+proceso), los otros sitios de nginx ni los otros procesos de pm2.
+
+Por que un Node propio: el MCP requiere Node >= 22. Si la VPS tiene una
+version anterior para otro proyecto, actualizarla podria romperlo. Se
+descarga Node 22 dentro de /opt/mcp-popey/runtime y pm2 lo usa solo
+para este proceso.
+
+
+---------------------------------------------------------------------
+ 1. REQUISITOS
+---------------------------------------------------------------------
+
+[VPS] Verificar:
+  uname -m                 x86_64 (si dice aarch64, cambiar "linux-x64"
+                           por "linux-arm64" en la seccion 2)
+  pm2 -v                   pm2 instalado
+  nginx -v                 nginx instalado
+  certbot --version        certbot instalado
+  git --version            git instalado (solo Opcion A)
+  free -h                  ver seccion 3 para la RAM necesaria
+  ss -ltnp | grep -w 3030  NO debe mostrar nada (puerto libre)
+
+Ademas:
+  - Un subdominio (ej: mcp.midominio.com) con acceso para crear el DNS.
+  - Acceso de administrador al servidor PostgreSQL.
+  - Opcion A: acceso de admin al repo en GitHub (para la deploy key).
+  - Opcion B: una PC con Node >= 22, git y acceso al repo.
+
+En toda la guia, reemplazar (sin los < >):
+  <VPS_IP>       IP publica de la VPS
+  <DOMINIO>      subdominio del MCP, ej: mcp.midominio.com
+  <DB_HOST>      host del servidor PostgreSQL
+
+
+---------------------------------------------------------------------
+ 2. NODE 22 AISLADO
+---------------------------------------------------------------------
+
+[VPS]
+  mkdir -p /opt/mcp-popey/app /opt/mcp-popey/runtime /opt/mcp-popey/logs
+  cd /tmp
+
+  BASE=https://nodejs.org/dist/latest-v22.x
+  curl -fsSL $BASE/SHASUMS256.txt -o node-shasums.txt
+  NODE_TARBALL=$(awk '/linux-x64\.tar\.xz$/ {print $2}' node-shasums.txt)
+  curl -fsSLO $BASE/$NODE_TARBALL
+  grep " $NODE_TARBALL\$" node-shasums.txt | sha256sum -c -
+      -> debe decir "OK"
+
+  tar -xJf $NODE_TARBALL -C /opt/mcp-popey/runtime --strip-components=1
+  rm -f $NODE_TARBALL node-shasums.txt
+
+  /opt/mcp-popey/runtime/bin/node -v
+      -> v22.x.x
+  node -v
+      -> el Node del sistema sigue igual
+
+Helper para usar npm con el Node 22 propio y con la cache dentro de
+/opt/mcp-popey (asi no se ensucia ~/.npm). Vale solo para la terminal
+actual: si se abre otra sesion, volver a definirlo.
+
+[VPS]
+  mcpnpm() { PATH=/opt/mcp-popey/runtime/bin:$PATH npm_config_cache=/opt/mcp-popey/.npm-cache npm "$@"; }
+
+No hacer "export PATH=..." global: pm2 tambien se ejecuta con node y
+pasaria a usar el Node 22, mezclando versiones con el daemon existente.
+
+
+---------------------------------------------------------------------
+ 3. INSTALAR LA APP (elegir UNA opcion)
+---------------------------------------------------------------------
+
+  Opcion A - Compilar en la VPS
+    Mas simple: no necesita PC, se actualiza con git pull.
+    Requiere margen de RAM: la compilacion (npm ci con devDependencies
+    + TypeScript) puede pedir 500 MB - 1 GB durante unos minutos.
+    Recomendada si la VPS tiene 2 GB de RAM o mas.
+
+  Opcion B - Compilar en la PC
+    La VPS solo recibe el resultado compilado; no hay pico de RAM.
+    Recomendada en VPS chicas (1 GB) con otros proyectos corriendo.
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+ OPCION A - Compilar en la VPS
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+A.1 Crear una deploy key (clave SSH de SOLO LECTURA para este repo).
+    Se guarda dentro de /opt/mcp-popey, no en ~/.ssh.
+
+[VPS]
+  ssh-keygen -t ed25519 -N "" -C "mcp-popey-deploy" -f /opt/mcp-popey/deploy_key
+  cat /opt/mcp-popey/deploy_key.pub
+
+[GitHub] Repo sistemasLang/mcp-popey -> Settings -> Deploy keys ->
+  Add deploy key -> pegar la clave publica.
+  Titulo sugerido: "mcp-popey <nombre de la VPS>".
+  NO marcar "Allow write access".
+
+A.2 Registrar la huella de GitHub (dentro de /opt/mcp-popey):
+
+[VPS]
+  ssh-keyscan -t ed25519 github.com > /opt/mcp-popey/known_hosts
+  ssh-keygen -lf /opt/mcp-popey/known_hosts
+      -> comparar con la huella ED25519 publicada en:
+         https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
+
+A.3 Clonar y compilar:
+
+[VPS]
+  SSH_CMD="ssh -i /opt/mcp-popey/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=/opt/mcp-popey/known_hosts"
+  GIT_SSH_COMMAND="$SSH_CMD" git clone git@github.com:sistemasLang/mcp-popey.git /opt/mcp-popey/app
+  cd /opt/mcp-popey/app
+  git config core.sshCommand "$SSH_CMD"
+
+  mcpnpm ci                     # incluye devDependencies para compilar
+  mcpnpm run build
+  mcpnpm prune --omit=dev       # quita las devDependencies al terminar
+
+  mkdir -p data && chmod 700 data
+
+  Continuar en la seccion 4.
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+ OPCION B - Compilar en la PC
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+B.1 Compilar y empaquetar:
+
+[PC]
+  git clone git@github.com:sistemasLang/mcp-popey.git
+  cd mcp-popey
+  npm ci
+  npm run build
+  tar -czf mcp-popey.tar.gz dist config scripts package.json package-lock.json .env.example
+  scp mcp-popey.tar.gz root@<VPS_IP>:/tmp/
+
+  Si SSH usa un puerto distinto de 22:  scp -P <PUERTO> mcp-popey.tar.gz ...
+
+B.2 Instalar en la VPS:
+
+[VPS]
+  # --no-same-owner: sin esto, root conserva el uid de la PC en los archivos
+  tar -xzf /tmp/mcp-popey.tar.gz --no-same-owner -C /opt/mcp-popey/app
+  rm -f /tmp/mcp-popey.tar.gz
+  cd /opt/mcp-popey/app
+  mcpnpm ci --omit=dev          # solo dependencias de produccion
+
+  Si npm sugiere "npm install -g npm@...": IGNORARLO. Actualizaria el
+  npm del sistema, que usan otros proyectos.
+
+  mkdir -p data && chmod 700 data
+
+
+---------------------------------------------------------------------
+ 4. BASE DE DATOS
+---------------------------------------------------------------------
+
+4.1 Crear el rol de solo lectura, una vez por cada base (lang, powerbi).
+    El script esta en el repo: scripts/create_readonly_role.sql
+
+[DB]
+  psql -U <owner> -d <base> -v ON_ERROR_STOP=1 \
+    -v ro_password='<password>' -v owner_role='<owner>' \
+    -f scripts/create_readonly_role.sql
+
+4.2 Permitir la conexion SOLO desde la VPS, en pg_hba.conf:
+
+[DB]
+  hostssl  <base>  mcp_popey_ro  <VPS_IP>/32  scram-sha-256
+
+  Luego recargar PostgreSQL:  SELECT pg_reload_conf();
+
+4.3 Firewall del servidor de base: abrir el 5432 SOLO para <VPS_IP>.
+
+4.4 Probar que el puerto responde:
+
+[VPS]
+  timeout 3 bash -c '</dev/tcp/<DB_HOST>/5432' && echo "DB alcanzable"
+
+
+---------------------------------------------------------------------
+ 5. CONFIGURAR .env
+---------------------------------------------------------------------
+
+[VPS]
+  cd /opt/mcp-popey/app
+  cp .env.example .env
+  chmod 600 .env
+  nano .env
+
+Valores obligatorios:
+
+  MCP_HOST=127.0.0.1        nunca 0.0.0.0: solo nginx debe llegar al MCP
+  MCP_PORT=3030
+  DATABASE_KEYS=lang,powerbi
+
+  DB_LANG_HOST=<DB_HOST>
+  DB_LANG_PORT=5432
+  DB_LANG_NAME=<base>
+  DB_LANG_USER=mcp_popey_ro
+  DB_LANG_PASSWORD=<password del paso 4.1>
+  DB_LANG_SSL=true
+
+  (idem para DB_POWERBI_*)
+
+  CIRCUITS_FILE=config/circuits.yaml
+  CIRCUIT_ACCESS_FILE=config/circuit-access.yaml
+  USERS_FILE=data/users.yaml
+
+IMPORTANTE: ninguna variable puede quedar vacia (VAR=). Una variable
+vacia NO toma el valor por defecto: el MCP no arranca o usa un valor
+invalido (ej: MCP_PORT= se interpreta como puerto 0). Completarla con
+su valor o borrar la linea entera para que use el default.
+
+Revisar tambien config/circuit-access.yaml: define que circuitos ve
+cada rol y si tiene query_sql habilitado.
+
+.env y data/ estan en .gitignore: ni git pull (Opcion A) ni el tar
+(Opcion B) los pisan.
+
+
+---------------------------------------------------------------------
+ 6. CREAR USUARIOS
+---------------------------------------------------------------------
+
+[VPS]
+  cd /opt/mcp-popey/app
+  /opt/mcp-popey/runtime/bin/node dist/cli/create-user.js \
+    --username juan --role administrador --database-key lang
+
+El token se muestra UNA SOLA VEZ: copiarlo y guardarlo de forma segura.
+Se almacena hasheado en data/users.yaml. No hace falta reiniciar.
+
+Otras operaciones:
+  ... create-user.js --username juan --rotate     nuevo token
+  ... create-user.js --username juan --disable    deshabilitar
+
+
+---------------------------------------------------------------------
+ 7. LEVANTAR CON PM2
+---------------------------------------------------------------------
+
+7.1 Crear el archivo de proceso:
+
+[VPS]
+cat > /opt/mcp-popey/ecosystem.config.cjs <<'EOF'
+module.exports = {
+  apps: [{
+    name: 'mcp-popey',
+    cwd: '/opt/mcp-popey/app',
+    script: 'dist/index.js',
+    interpreter: '/opt/mcp-popey/runtime/bin/node',
+    exec_mode: 'fork',
+    instances: 1,
+    max_memory_restart: '250M',
+    out_file: '/opt/mcp-popey/logs/out.log',
+    error_file: '/opt/mcp-popey/logs/error.log',
+    env: {
+      NODE_ENV: 'production',
+      MCP_HOST: '127.0.0.1',
+      MCP_PORT: '3030'
+    }
+  }]
+};
+EOF
+
+7.2 Arrancar y guardar:
+
+[VPS]
+  pm2 start /opt/mcp-popey/ecosystem.config.cjs
+  pm2 save
+  pm2 ls
+      -> mcp-popey "online"; los otros procesos siguen igual
+
+7.3 Verificar que pm2 arranca al bootear (normalmente ya esta
+    configurado por el otro proyecto):
+
+[VPS]
+  systemctl is-enabled pm2-root
+      -> "enabled". Si no, ejecutar: pm2 startup  (y seguir lo que indica)
+
+7.4 Probar localmente:
+
+[VPS]
+  curl -i http://127.0.0.1:3030/mcp
+      -> HTTP/1.1 401 Unauthorized   (correcto: falta el token)
+
+  pm2 logs mcp-popey --lines 20
+      -> "mcp-popey listening on http://127.0.0.1:3030/mcp ..."
+
+
+---------------------------------------------------------------------
+ 8. NGINX + HTTPS
+---------------------------------------------------------------------
+
+8.1 Crear el registro DNS:
+
+[DNS]
+  A  <DOMINIO>  ->  <VPS_IP>
+
+[VPS]
+  getent hosts <DOMINIO>
+      -> debe devolver <VPS_IP>
+
+8.2 Crear el sitio (reemplazar <DOMINIO> dentro del archivo):
+
+[VPS]
+cat > /etc/nginx/sites-available/mcp-popey <<'EOF'
+server {
+    listen 80;
+    server_name <DOMINIO>;
+
+    location = /mcp {
+        proxy_pass http://127.0.0.1:3030;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+
+        # Streamable HTTP puede responder por SSE: no bufferear
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        client_max_body_size 1m;
+    }
+
+    location / {
+        return 404;
+    }
+}
+EOF
+
+  ln -s /etc/nginx/sites-available/mcp-popey /etc/nginx/sites-enabled/mcp-popey
+  nginx -t && systemctl reload nginx
+
+8.3 Certificado HTTPS (certbot agrega el bloque SSL a ESTE sitio):
+
+[VPS]
+  certbot --nginx -d <DOMINIO>
+
+8.4 Probar desde afuera:
+
+[PC o cualquier maquina]
+  curl -i https://<DOMINIO>/mcp
+      -> HTTP/1.1 401 Unauthorized
+
+8.5 Conectar un cliente (ej: Claude Code):
+
+  claude mcp add --transport http popey https://<DOMINIO>/mcp \
+    --header "Authorization: Bearer <token>"
+
+IMPORTANTE: nunca exponer el puerto 3030 en el firewall ni usar HTTP
+sin TLS: el token viaja en cada request.
+
+
+---------------------------------------------------------------------
+ 9. DESINSTALAR POR COMPLETO
+---------------------------------------------------------------------
+
+[VPS]
+  pm2 delete mcp-popey
+  pm2 save
+
+  rm -f /etc/nginx/sites-enabled/mcp-popey
+  rm -f /etc/nginx/sites-available/mcp-popey
+  nginx -t && systemctl reload nginx
+
+  certbot delete --cert-name <DOMINIO>
+
+  rm -rf /opt/mcp-popey
+
+Verificar que no queda nada:
+
+[VPS]
+  pm2 ls                          -> sin mcp-popey
+  ls /etc/nginx/sites-enabled/    -> sin mcp-popey
+  certbot certificates            -> sin <DOMINIO>
+  ls /opt                         -> sin mcp-popey
+  ss -ltnp | grep -w 3030         -> sin salida
+
+Fuera de la VPS:
+
+  [GitHub] (solo Opcion A) Settings -> Deploy keys: borrar la clave
+           de esta VPS.
+  [DNS]    Borrar el registro A de <DOMINIO>.
+  [DB]     Firewall: quitar la regla del 5432 para <VPS_IP>.
+  [DB]     pg_hba.conf: quitar la linea de mcp_popey_ro y ejecutar
+           SELECT pg_reload_conf();
+  [DB]     (Opcional) borrar el rol. En CADA base donde se creo:
+               DROP OWNED BY mcp_popey_ro;
+           y luego una sola vez:
+               DROP ROLE mcp_popey_ro;
+
+
+---------------------------------------------------------------------
+ 10. ACTUALIZAR A UNA NUEVA VERSION
+---------------------------------------------------------------------
+
+Primero definir el helper mcpnpm (seccion 2) en la terminal.
+
+Opcion A:
+
+[VPS]
+  cd /opt/mcp-popey/app
+  git pull
+  mcpnpm ci
+  mcpnpm run build
+  mcpnpm prune --omit=dev
+  pm2 restart mcp-popey
+
+  Si se edito config/circuit-access.yaml en la VPS, git pull avisa del
+  conflicto en vez de pisarlo.
+
+Opcion B:
+
+[PC]
+  git pull && npm ci && npm run build
+  tar -czf mcp-popey.tar.gz dist config scripts package.json package-lock.json .env.example
+  scp mcp-popey.tar.gz root@<VPS_IP>:/tmp/
+
+[VPS]
+  cd /opt/mcp-popey/app
+  cp config/circuit-access.yaml /opt/mcp-popey/circuit-access.yaml.bak
+  rm -rf dist
+  tar -xzf /tmp/mcp-popey.tar.gz --no-same-owner -C /opt/mcp-popey/app
+  rm -f /tmp/mcp-popey.tar.gz
+  mcpnpm ci --omit=dev
+  pm2 restart mcp-popey
+
+  OJO: el tar incluye config/ y pisa circuit-access.yaml. Si se habia
+  editado a mano en la VPS, restaurarlo desde el .bak.
