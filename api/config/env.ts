@@ -7,7 +7,7 @@ import { QUERY_LIMITS, SQL_QUERY_LIMITS } from '../domain/security/query-limits.
 
 /**
  * Project root (the folder holding package.json, config/ and data/), from this
- * file's location: src/config or dist/config → ../.. . Relative paths are
+ * file's location: api/config or dist/config → ../.. . Relative paths are
  * resolved against it, never against the current directory, so the server and
  * the CLI find the same .env and users.yaml wherever they are launched from.
  */

@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { InMemoryUserRepository } from '../../src/adapters/outbound/memory/in-memory-user.repository.js';
-import { SlidingWindowRateLimiter } from '../../src/adapters/outbound/memory/sliding-window.rate-limiter.js';
-import { RolePolicyLoader } from '../../src/adapters/outbound/yaml/role-policy.loader.js';
-import { AuthorizationService } from '../../src/application/services/authorization.service.js';
-import { AuthenticateUserUseCase } from '../../src/application/use-cases/authenticate-user.use-case.js';
-import { ManageUsersUseCase } from '../../src/application/use-cases/manage-users.use-case.js';
-import { QuerySqlUseCase } from '../../src/application/use-cases/query-sql.use-case.js';
-import { AuthenticationError, AuthorizationError, UserManagementError } from '../../src/domain/errors.js';
-import { hashToken } from '../../src/domain/auth-token.js';
-import { SQL_QUERY_LIMITS } from '../../src/domain/security/query-limits.js';
+import { InMemoryUserRepository } from '../../api/adapters/outbound/memory/in-memory-user.repository.js';
+import { SlidingWindowRateLimiter } from '../../api/adapters/outbound/memory/sliding-window.rate-limiter.js';
+import { RolePolicyLoader } from '../../api/adapters/outbound/yaml/role-policy.loader.js';
+import { AuthorizationService } from '../../api/application/services/authorization.service.js';
+import { AuthenticateUserUseCase } from '../../api/application/use-cases/authenticate-user.use-case.js';
+import { ManageUsersUseCase } from '../../api/application/use-cases/manage-users.use-case.js';
+import { QuerySqlUseCase } from '../../api/application/use-cases/query-sql.use-case.js';
+import { AuthenticationError, AuthorizationError, UserManagementError } from '../../api/domain/errors.js';
+import { hashToken } from '../../api/domain/auth-token.js';
+import { SQL_QUERY_LIMITS } from '../../api/domain/security/query-limits.js';
 import { SpyDatabaseAdapter, TEST_ROLE_POLICY } from '../e2e-harness.js';
 import { loadRealRegistry } from '../helpers.js';
 

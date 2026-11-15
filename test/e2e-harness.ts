@@ -1,20 +1,20 @@
 import type { AddressInfo } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { createApplication, type Application, type ApplicationOptions } from '../src/composition/container.js';
-import { InMemoryAuditLogger } from '../src/adapters/outbound/memory/in-memory-audit.logger.js';
-import { generateToken, hashToken } from '../src/domain/auth-token.js';
-import { DatabaseRegistry } from '../src/adapters/outbound/postgres/database.registry.js';
+import { createApplication, type Application, type ApplicationOptions } from '../api/composition/container.js';
+import { InMemoryAuditLogger } from '../api/adapters/outbound/memory/in-memory-audit.logger.js';
+import { generateToken, hashToken } from '../api/domain/auth-token.js';
+import { DatabaseRegistry } from '../api/adapters/outbound/postgres/database.registry.js';
 import type {
   ReadOnlyDatabasePort,
   SelectOptions,
   SelectResult,
   SqlOptions,
   SqlResult,
-} from '../src/application/ports/outbound/database.port.js';
-import { RolePolicyLoader } from '../src/adapters/outbound/yaml/role-policy.loader.js';
-import { QUERY_LIMITS } from '../src/domain/security/query-limits.js';
-import type { UserRecord } from '../src/domain/user.js';
-import { InMemoryUserRepository } from '../src/adapters/outbound/memory/in-memory-user.repository.js';
+} from '../api/application/ports/outbound/database.port.js';
+import { RolePolicyLoader } from '../api/adapters/outbound/yaml/role-policy.loader.js';
+import { QUERY_LIMITS } from '../api/domain/security/query-limits.js';
+import type { UserRecord } from '../api/domain/user.js';
+import { InMemoryUserRepository } from '../api/adapters/outbound/memory/in-memory-user.repository.js';
 import { loadRealRegistry } from './helpers.js';
 
 export const TEST_ROLE_POLICY = `

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { DatabaseRegistry } from '../../src/adapters/outbound/postgres/database.registry.js';
-import { ConfigurationError } from '../../src/domain/errors.js';
+import { DatabaseRegistry } from '../../api/adapters/outbound/postgres/database.registry.js';
+import { ConfigurationError } from '../../api/domain/errors.js';
 
 const env = {
   DATABASE_KEYS: 'lang, cliente_b',

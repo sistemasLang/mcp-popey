@@ -1,6 +1,6 @@
 import type { Client } from '@modelcontextprotocol/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DatabaseQueryError } from '../../src/domain/errors.js';
+import { DatabaseQueryError } from '../../api/domain/errors.js';
 import {
   callTool,
   connectClient,

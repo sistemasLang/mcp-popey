@@ -1,9 +1,9 @@
 import pg from 'pg';
 import { describe, expect, it } from 'vitest';
-import { PostgresDatabaseAdapter } from '../../src/adapters/outbound/postgres/postgres-database.adapter.js';
-import type { PoolManager } from '../../src/adapters/outbound/postgres/pool.manager.js';
-import { AppError } from '../../src/domain/errors.js';
-import { toPublicError } from '../../src/adapters/inbound/mcp/error-mapper.js';
+import { PostgresDatabaseAdapter } from '../../api/adapters/outbound/postgres/postgres-database.adapter.js';
+import type { PoolManager } from '../../api/adapters/outbound/postgres/pool.manager.js';
+import { AppError } from '../../api/domain/errors.js';
+import { toPublicError } from '../../api/adapters/inbound/mcp/error-mapper.js';
 
 function pgError(code: string, message: string, extra: { hint?: string; position?: string } = {}): pg.DatabaseError {
   const error = new pg.DatabaseError(message, 0, 'error');

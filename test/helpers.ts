@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
-import { CircuitLoader } from '../src/adapters/outbound/yaml/circuit.loader.js';
-import { CircuitRegistry } from '../src/domain/circuits/circuit.registry.js';
+import { CircuitLoader } from '../api/adapters/outbound/yaml/circuit.loader.js';
+import { CircuitRegistry } from '../api/domain/circuits/circuit.registry.js';
 
 export const REAL_CIRCUITS_PATH = fileURLToPath(new URL('../config/circuits.yaml', import.meta.url));
 

@@ -44,7 +44,7 @@ Operadores de filtro: `eq neq gt gte lt lte in contains startsWith isNull isNotN
 ## Arquitectura (puertos y adaptadores)
 
 ```
-src/
+api/
   domain/          reglas puras: errores, UserContext, catálogo de circuitos,
                    QueryCompiler, límites. Sin dependencias externas.
   application/

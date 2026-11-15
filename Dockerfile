@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json tsconfig.build.json ./
-COPY src ./src
+COPY api ./api
 RUN npm run build
 
 FROM node:22-bookworm-slim AS deps

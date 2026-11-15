@@ -1,20 +1,20 @@
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { BearerAuth } from '../../src/adapters/inbound/http/bearer-auth.js';
-import { AuthenticateUserUseCase } from '../../src/application/use-cases/authenticate-user.use-case.js';
-import { generateToken, hashToken } from '../../src/domain/auth-token.js';
-import type { UserContext } from '../../src/domain/user-context.js';
-import { CircuitPolicyService } from '../../src/application/services/circuit-policy.service.js';
+import { BearerAuth } from '../../api/adapters/inbound/http/bearer-auth.js';
+import { AuthenticateUserUseCase } from '../../api/application/use-cases/authenticate-user.use-case.js';
+import { generateToken, hashToken } from '../../api/domain/auth-token.js';
+import type { UserContext } from '../../api/domain/user-context.js';
+import { CircuitPolicyService } from '../../api/application/services/circuit-policy.service.js';
 import {
   AuthenticationError,
   AuthorizationError,
   CircuitNotFoundError,
   ConfigurationError,
   TableNotAllowedError,
-} from '../../src/domain/errors.js';
-import { AuthorizationService } from '../../src/application/services/authorization.service.js';
-import { RolePolicyLoader } from '../../src/adapters/outbound/yaml/role-policy.loader.js';
-import { InMemoryUserRepository } from '../../src/adapters/outbound/memory/in-memory-user.repository.js';
+} from '../../api/domain/errors.js';
+import { AuthorizationService } from '../../api/application/services/authorization.service.js';
+import { RolePolicyLoader } from '../../api/adapters/outbound/yaml/role-policy.loader.js';
+import { InMemoryUserRepository } from '../../api/adapters/outbound/memory/in-memory-user.repository.js';
 import { loadTestRegistry } from '../helpers.js';
 
 const registry = loadTestRegistry();

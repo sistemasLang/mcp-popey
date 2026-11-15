@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { UserContext } from '../../src/domain/user-context.js';
-import { CircuitPolicyService } from '../../src/application/services/circuit-policy.service.js';
+import type { UserContext } from '../../api/domain/user-context.js';
+import { CircuitPolicyService } from '../../api/application/services/circuit-policy.service.js';
 import {
   AuthorizationError,
   CircuitNotFoundError,
@@ -8,14 +8,14 @@ import {
   InternalError,
   InvalidQueryError,
   TableNotAllowedError,
-} from '../../src/domain/errors.js';
-import { AuthorizationService } from '../../src/application/services/authorization.service.js';
-import { RolePolicyLoader } from '../../src/adapters/outbound/yaml/role-policy.loader.js';
-import { escapeLike, QueryCompiler, quoteIdentifier } from '../../src/domain/query/query.compiler.js';
-import { QueryCircuitSchema } from '../../src/adapters/inbound/mcp/schemas/query-circuit.schema.js';
-import type { QueryCircuitRequest, ValidatedQuery } from '../../src/domain/query/query.types.js';
-import { QueryValidator } from '../../src/application/services/query.validator.js';
-import { QUERY_LIMITS } from '../../src/domain/security/query-limits.js';
+} from '../../api/domain/errors.js';
+import { AuthorizationService } from '../../api/application/services/authorization.service.js';
+import { RolePolicyLoader } from '../../api/adapters/outbound/yaml/role-policy.loader.js';
+import { escapeLike, QueryCompiler, quoteIdentifier } from '../../api/domain/query/query.compiler.js';
+import { QueryCircuitSchema } from '../../api/adapters/inbound/mcp/schemas/query-circuit.schema.js';
+import type { QueryCircuitRequest, ValidatedQuery } from '../../api/domain/query/query.types.js';
+import { QueryValidator } from '../../api/application/services/query.validator.js';
+import { QUERY_LIMITS } from '../../api/domain/security/query-limits.js';
 import { loadTestRegistry } from '../helpers.js';
 
 const registry = loadTestRegistry();

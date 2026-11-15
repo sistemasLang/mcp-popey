@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { CircuitLoader } from '../../src/adapters/outbound/yaml/circuit.loader.js';
-import { CircuitRegistry } from '../../src/domain/circuits/circuit.registry.js';
-import { ConfigurationError } from '../../src/domain/errors.js';
-import { isBlockedSchema } from '../../src/domain/security/blocked-schemas.js';
+import { CircuitLoader } from '../../api/adapters/outbound/yaml/circuit.loader.js';
+import { CircuitRegistry } from '../../api/domain/circuits/circuit.registry.js';
+import { ConfigurationError } from '../../api/domain/errors.js';
+import { isBlockedSchema } from '../../api/domain/security/blocked-schemas.js';
 import { loadRealRegistry, loadTestRegistry, REAL_CIRCUITS_PATH } from '../helpers.js';
 
 describe('CircuitLoader — structural validation', () => {

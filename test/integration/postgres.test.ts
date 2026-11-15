@@ -3,11 +3,11 @@ import type { Client as McpClient } from '@modelcontextprotocol/client';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PostgresDatabaseAdapter } from '../../src/adapters/outbound/postgres/postgres-database.adapter.js';
-import { DatabaseRegistry } from '../../src/adapters/outbound/postgres/database.registry.js';
-import type { DatabaseConfig } from '../../src/adapters/outbound/postgres/database.registry.js';
-import { PoolManager } from '../../src/adapters/outbound/postgres/pool.manager.js';
-import { AuthorizationError, DatabaseQueryError, QueryTimeoutError, type AppError } from '../../src/domain/errors.js';
+import { PostgresDatabaseAdapter } from '../../api/adapters/outbound/postgres/postgres-database.adapter.js';
+import { DatabaseRegistry } from '../../api/adapters/outbound/postgres/database.registry.js';
+import type { DatabaseConfig } from '../../api/adapters/outbound/postgres/database.registry.js';
+import { PoolManager } from '../../api/adapters/outbound/postgres/pool.manager.js';
+import { AuthorizationError, DatabaseQueryError, QueryTimeoutError, type AppError } from '../../api/domain/errors.js';
 import { callTool, connectClient, makeUser, startTestApp, type TestApp } from '../e2e-harness.js';
 
 /**

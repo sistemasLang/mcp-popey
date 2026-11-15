@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { RateLimitExceededError } from '../../src/domain/errors.js';
-import { redactCredentials } from '../../src/adapters/outbound/logging/stderr-internal-error.logger.js';
-import { BLOCKED_SCHEMAS, isBlockedSchema } from '../../src/domain/security/blocked-schemas.js';
-import { SlidingWindowRateLimiter as RateLimiter } from '../../src/adapters/outbound/memory/sliding-window.rate-limiter.js';
+import { RateLimitExceededError } from '../../api/domain/errors.js';
+import { redactCredentials } from '../../api/adapters/outbound/logging/stderr-internal-error.logger.js';
+import { BLOCKED_SCHEMAS, isBlockedSchema } from '../../api/domain/security/blocked-schemas.js';
+import { SlidingWindowRateLimiter as RateLimiter } from '../../api/adapters/outbound/memory/sliding-window.rate-limiter.js';
 
 describe('RateLimiter', () => {
   it('allows maxRequests per window and per user, then recovers', () => {
@@ -38,13 +38,13 @@ describe('blocked schemas', () => {
 
   it('a schema added to the list blocks every table, case-insensitively', async () => {
     vi.resetModules();
-    vi.doMock('../../src/domain/security/blocked-schemas.js', () => ({
+    vi.doMock('../../api/domain/security/blocked-schemas.js', () => ({
       BLOCKED_SCHEMAS: ['secreto'],
       isBlockedSchema: (schema: string) => schema.toLowerCase() === 'secreto',
     }));
     try {
-      const { CircuitRegistry } = await import('../../src/domain/circuits/circuit.registry.js');
-      const { CircuitLoader } = await import('../../src/adapters/outbound/yaml/circuit.loader.js');
+      const { CircuitRegistry } = await import('../../api/domain/circuits/circuit.registry.js');
+      const { CircuitLoader } = await import('../../api/adapters/outbound/yaml/circuit.loader.js');
       const registry = CircuitRegistry.fromDefinitions(
         CircuitLoader.parse(
           'circuits:\n  c:\n    description: x\n    tables:\n      - table: secreto.t\n        role: x\n        key_columns: [a]\n',
@@ -53,7 +53,7 @@ describe('blocked schemas', () => {
       expect(registry.getTable('c', 'secreto.t')?.queryable).toBe(false);
       expect(registry.getTable('c', 'secreto.t')?.denyReasons).toContain('blocked_schema');
     } finally {
-      vi.doUnmock('../../src/domain/security/blocked-schemas.js');
+      vi.doUnmock('../../api/domain/security/blocked-schemas.js');
       vi.resetModules();
     }
   });

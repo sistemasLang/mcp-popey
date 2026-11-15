@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DatabaseRegistry } from '../../src/adapters/outbound/postgres/database.registry.js';
-import { buildConfig } from '../../src/config/config.js';
-import { APP_ROOT, readEnv } from '../../src/config/env.js';
-import { ConfigurationError } from '../../src/domain/errors.js';
+import { DatabaseRegistry } from '../../api/adapters/outbound/postgres/database.registry.js';
+import { buildConfig } from '../../api/config/config.js';
+import { APP_ROOT, readEnv } from '../../api/config/env.js';
+import { ConfigurationError } from '../../api/domain/errors.js';
 
 describe('query_sql configuration', () => {
   it('defaults to 1000 rows and 30 s', () => {

@@ -53,10 +53,10 @@ context: |
   Stack y convenciones técnicas:
   - Node >= 22, TypeScript 7 (ESM, imports con extensión .js), MCP SDK v2 en
     paquetes separados (@modelcontextprotocol/server y /node), zod 4, pg, yaml.
-  - Arquitectura hexagonal (puertos y adaptadores): src/domain (reglas puras),
-    src/application (ports/outbound, services, use-cases), src/adapters (inbound:
+  - Arquitectura hexagonal (puertos y adaptadores): api/domain (reglas puras),
+    api/application (ports/outbound, services, use-cases), api/adapters (inbound:
     http, mcp, cli; outbound: postgres, yaml, audit, memory, logging) y un composition
-    root en src/composition (container.ts + bootstrap.ts). Las dependencias apuntan
+    root en api/composition (container.ts + bootstrap.ts). Las dependencias apuntan
     hacia adentro; test/unit/architecture.test.ts lo verifica. dist/index.js y
     dist/cli/create-user.js son rutas estables (pm2 y docs de la VPS).
     Sin dependencias nuevas sin justificación en design.md.
@@ -86,7 +86,7 @@ operations:
   apply:
     guidance:
       - No modificar config/circuit-access.yaml ni .env salvo que la tarea lo pida explícitamente.
-      - Correr npm test después de cada grupo de tareas que toque src/.
+      - Correr npm test después de cada grupo de tareas que toque api/.
   archive:
     guidance:
       - Verificar que README.md siga coherente con los specs antes de archivar.
