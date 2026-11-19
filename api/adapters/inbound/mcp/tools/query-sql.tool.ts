@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { McpServer } from '@modelcontextprotocol/server';
-import type { UserContext } from '../../../../domain/user-context.js';
+import type { Principal } from '../../../../domain/user-context.js';
 import { QuerySqlSchema } from '../schemas/query-sql.schema.js';
 import type { McpUseCases } from '../mcp-server.js';
 import { runTool } from '../tool-runner.js';
@@ -24,7 +24,8 @@ const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').diges
  * Tool → Zod (SDK) → UserContext (closure) → QuerySqlUseCase.
  * Registered only for roles with `sql: true` (see createMcpServer).
  */
-export function registerQuerySqlTool(server: McpServer, user: UserContext, deps: McpUseCases): void {
+export function registerQuerySqlTool(server: McpServer, principal: Principal, deps: McpUseCases): void {
+  const user = principal.context;
   server.registerTool(
     'query_sql',
     {
@@ -34,7 +35,7 @@ export function registerQuerySqlTool(server: McpServer, user: UserContext, deps:
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     ({ sql }) =>
-      runTool('query_sql', user, deps, {
+      runTool('query_sql', principal, deps, {
         // Hash and length only: literals in the SQL may carry personal data.
         audit: { sqlSha256: sha256(sql), sqlLength: sql.length },
         run: () => deps.querySql.execute(user, sql),

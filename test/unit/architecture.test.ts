@@ -39,4 +39,21 @@ describe('architecture', () => {
   it('adapters never reach into the composition root', () => {
     expect(violations('adapters', /composition\//)).toEqual([]);
   });
+
+  it('domain and application know nothing about jose or Auth0: changing IdP is an adapter swap', () => {
+    for (const layer of ['domain', 'application']) {
+      expect(violations(layer, /^jose$|\/auth0\//)).toEqual([]);
+      for (const file of filesIn(layer)) expect(readFileSync(file, 'utf8')).not.toMatch(/auth0\.com|@clients/);
+    }
+  });
+
+  it('only the JWT verifier imports jose, and only the Auth0 adapter talks to Auth0', () => {
+    const importers = (pattern: RegExp) =>
+      ['domain', 'application', 'adapters', 'composition', 'config']
+        .flatMap((layer) => filesIn(layer))
+        .filter((file) => importsOf(file).some((specifier) => pattern.test(specifier)))
+        .map((file) => relative(SRC, file));
+    expect(importers(/^jose$/)).toEqual(['adapters/inbound/http/jwt-access-token.verifier.ts']);
+    expect(importers(/auth0-identity-provider\.adapter\.js$/)).toEqual(['composition/bootstrap.ts']);
+  });
 });

@@ -14,7 +14,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
     "dev": "tsx watch api/index.ts",
-    "create-user": "node dist/cli/create-user.js",
     "test": "vitest run test/unit",
     "test:integration": "vitest run test/integration",
     "test:all": "vitest run"
@@ -22,6 +21,7 @@
   "dependencies": {
     "@modelcontextprotocol/node": "^2.1.1",
     "@modelcontextprotocol/server": "^2.3.1",
+    "jose": "^6.2.17",
     "pg": "^8.23.1",
     "pg-cursor": "^2.22.1",
     "yaml": "^2.9.1",

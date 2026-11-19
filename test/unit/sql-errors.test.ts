@@ -82,10 +82,4 @@ describe('query_sql error mapping', () => {
     const outcome = await publicErrorOf(adapterFailingWith(new Error('connect ECONNREFUSED 10.0.0.5:5432'), { connectFails: true }));
     expect(outcome).toEqual({ code: 'DATABASE_QUERY_ERROR', message: 'The database is not available' });
   });
-
-  it('query_circuit keeps curated messages only, never diagnostics', async () => {
-    const adapter = adapterFailingWith(pgError('42601', 'syntax error'));
-    const error = await adapter.executeSelect('a', 'SELECT 1', [], { timeoutMs: 1_000 }).catch((caught: unknown) => caught);
-    expect(toPublicError(error, () => {})).toEqual({ code: 'DATABASE_QUERY_ERROR', message: 'The database could not execute the query' });
-  });
 });

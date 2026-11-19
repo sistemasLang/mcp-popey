@@ -1,0 +1,5 @@
+{
+  "issuer": "https://<AUTH0_DOMAIN>/",
+  "clientId": "<client id of the Auth0 Single Page Application of the panel>",
+  "audience": "<ADMIN_API_AUDIENCE>"
+}

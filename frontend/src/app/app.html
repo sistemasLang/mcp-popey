@@ -1,0 +1,8 @@
+<header class="app-header">
+  <span class="h6">MCP Popey · Administración</span>
+  @if (auth.isLoggedIn()) {
+    <span class="app-header__user text-muted">{{ auth.userLabel() }}</span>
+    <button type="button" class="btn btn-outline" (click)="auth.logout()">Cerrar sesión</button>
+  }
+</header>
+<router-outlet />

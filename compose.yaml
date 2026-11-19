@@ -19,3 +19,17 @@ services:
       - ./config:/app/config:ro
       # Bind mount (not a named volume) so `docker volume prune` can never delete users.yaml.
       - ./data:/app/data
+
+  admin:
+    # Admin panel + single entry point (nginx): /admin/, /admin/api, /mcp and the OAuth metadata.
+    build: ./frontend
+    image: mcp-popey-admin:latest
+    restart: unless-stopped
+    depends_on:
+      mcp:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8088:80"
+    volumes:
+      # Runtime config of the panel (issuer, clientId, audience); copy from public/config.example.json.
+      - ./frontend/public/config.json:/usr/share/nginx/html/admin/config.json:ro

@@ -1,0 +1,428 @@
+@use 'sass:map';
+@use 'sass:math';
+
+// =============================================================================
+// Popey Design System — Modo oscuro
+// Fuente: "Popey - elements design system.xlsx" (hojas COLORS y FONTS).
+// Los colores de marca se conservan; superficies, textos y estados se
+// adaptan a fondo oscuro manteniendo el rol que cada color tiene en el modo claro.
+// =============================================================================
+
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@500;700&family=Open+Sans:wght@400;600;700&display=swap');
+
+// -----------------------------------------------------------------------------
+// 1. Paleta original (modo claro, tal cual el Excel) — referencia
+// -----------------------------------------------------------------------------
+$popey-light: (
+  primary: #f15829,
+  primary-disabled: #ff7a51,
+  secondary: #09aee6,
+  secondary-disabled: #c7f3fc,
+  gray-dark: #48454e,
+  gray-dark-disabled: #bebfc1,
+  gray-medium: #505050,
+  gray-light: #ededed,
+  gray-light-disabled: #f3f3f3,
+  gray-medium-disabled: #ababaa,
+  lime-white: #f8f8f8,
+  ok: #539a51,
+  error: #901717,
+);
+
+// -----------------------------------------------------------------------------
+// 2. Tokens del modo oscuro
+// -----------------------------------------------------------------------------
+$popey-dark: (
+  // Superficies (neutros derivados del tono de Gray Dark #48454E)
+  bg: #1c1b1f,
+  surface: #232129,
+  surface-raised: #2b2930,
+  header-bg: #211f26, // Lime White (header) en claro
+  border: #48454e,
+  border-subtle: #36343b,
+
+  // Texto
+  text: #ededed, // Gray Light
+  text-muted: #bebfc1, // Gray Dark - Disable
+  text-disabled: #8e8d90,
+  text-on-primary: #ffffff,
+  text-on-secondary: #1c1b1f,
+
+  // Marca
+  primary: #f15829,
+  primary-hover: #ff7a51, // Primary - Disable del claro, reutilizado como hover
+  primary-disabled: #6d3223,
+  secondary: #09aee6,
+  secondary-hover: #3cc3f0,
+  secondary-disabled: #15536b,
+
+  // Neutros de acción (Gray Dark)
+  neutral: #48454e,
+  neutral-hover: #57545e,
+  neutral-disabled: #2e2c33,
+  neutral-text-disabled: #6b6970,
+
+  // Botonera (en claro: fondo Gray Dark, alternados Gray Medium, texto Gray Light)
+  toolbar-bg: #2b2930,
+  toolbar-alt: #36343b,
+  toolbar-text: #ededed,
+
+  // Campo no editable con dato por defecto
+  // (en claro: fondo Gray Light - Disable, texto y línea Gray Medium - Disable)
+  field-readonly-bg: #2a292e,
+  field-readonly-text: #8e8d90,
+  field-readonly-border: #3a393e,
+
+  // Estados (Error #901717 no alcanza contraste sobre oscuro: se aclara para texto)
+  ok: #539a51,
+  ok-text: #7cc479,
+  ok-container: #1e3a1e,
+  error: #901717,
+  error-text: #ef6b6b,
+  error-container: #3d1414,
+
+  focus-ring: rgba(241, 88, 41, 0.45),
+);
+
+// -----------------------------------------------------------------------------
+// 3. Tipografía (hoja FONTS) — tamaño / interlineado / tracking en px
+// -----------------------------------------------------------------------------
+$font-headline: 'Montserrat', sans-serif;
+$font-body: 'Open Sans', sans-serif;
+
+$type-scale: (
+  h1: (family: $font-headline, weight: 500, size: 40, line: 44, tracking: 0),
+  h2: (family: $font-headline, weight: 500, size: 32, line: 36, tracking: 0),
+  h3: (family: $font-headline, weight: 500, size: 28, line: 30, tracking: 0),
+  h4: (family: $font-headline, weight: 500, size: 24, line: 26, tracking: 0),
+  h5: (family: $font-headline, weight: 500, size: 20, line: 24, tracking: 0),
+  h6: (family: $font-headline, weight: 700, size: 14, line: 16, tracking: 0),
+  body-lg: (family: $font-body, weight: 400, size: 16, line: 24, tracking: 0.5),
+  body-md: (family: $font-body, weight: 400, size: 14, line: 20, tracking: 0.25),
+  body-sm: (family: $font-body, weight: 400, size: 12, line: 16, tracking: 0.4),
+  body-xs: (family: $font-body, weight: 400, size: 10, line: 12, tracking: 0.4),
+);
+
+@function rem($px) {
+  @return math.div($px, 16) * 1rem;
+}
+
+@mixin type($name) {
+  $style: map.get($type-scale, $name);
+  font-family: var(--font-#{$name}-family);
+  font-weight: var(--font-#{$name}-weight);
+  font-size: var(--font-#{$name}-size);
+  line-height: var(--font-#{$name}-line);
+  letter-spacing: var(--font-#{$name}-tracking);
+}
+
+// -----------------------------------------------------------------------------
+// 4. Custom properties
+// -----------------------------------------------------------------------------
+:root {
+  color-scheme: dark;
+
+  @each $name, $value in $popey-dark {
+    --color-#{$name}: #{$value};
+  }
+
+  @each $name, $style in $type-scale {
+    --font-#{$name}-family: #{map.get($style, family)};
+    --font-#{$name}-weight: #{map.get($style, weight)};
+    --font-#{$name}-size: #{rem(map.get($style, size))};
+    --font-#{$name}-line: #{rem(map.get($style, line))};
+    --font-#{$name}-tracking: #{map.get($style, tracking) * 1px};
+  }
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --transition-fast: 150ms ease;
+}
+
+// -----------------------------------------------------------------------------
+// 5. Base
+// -----------------------------------------------------------------------------
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  @include type(body-md);
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+// Headlines (también como clases para desacoplar semántica de estilo)
+@each $level in (h1, h2, h3, h4, h5, h6) {
+  #{$level},
+  .#{$level} {
+    @include type($level);
+    margin: 0 0 0.5em;
+    color: var(--color-text);
+  }
+}
+
+@each $name in (body-lg, body-md, body-sm, body-xs) {
+  .text-#{$name} {
+    @include type($name);
+  }
+}
+
+p {
+  margin: 0 0 1em;
+}
+
+a {
+  color: var(--color-secondary);
+  text-decoration: none;
+
+  &:hover {
+    color: var(--color-secondary-hover);
+    text-decoration: underline;
+  }
+}
+
+::selection {
+  background-color: var(--color-primary);
+  color: var(--color-text-on-primary);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+// Descripciones debajo de títulos / textos de ayuda → Body Large
+.description,
+.help-text {
+  @include type(body-lg);
+  color: var(--color-text-muted);
+}
+
+// -----------------------------------------------------------------------------
+// 6. Botones (Body Large)
+// -----------------------------------------------------------------------------
+.btn {
+  @include type(body-lg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1.25rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast);
+
+  &:disabled,
+  &.is-disabled {
+    cursor: not-allowed;
+  }
+}
+
+@mixin btn-variant($name, $text) {
+  .btn-#{$name} {
+    background-color: var(--color-#{$name});
+    color: var(--color-#{$text});
+
+    &:hover:not(:disabled, .is-disabled) {
+      background-color: var(--color-#{$name}-hover);
+    }
+
+    &:disabled,
+    &.is-disabled {
+      background-color: var(--color-#{$name}-disabled);
+    }
+  }
+}
+
+@include btn-variant(primary, text-on-primary);
+@include btn-variant(secondary, text-on-secondary);
+@include btn-variant(neutral, text);
+
+.btn-primary:disabled,
+.btn-primary.is-disabled,
+.btn-secondary:disabled,
+.btn-secondary.is-disabled {
+  color: var(--color-text-disabled);
+}
+
+.btn-neutral:disabled,
+.btn-neutral.is-disabled {
+  color: var(--color-neutral-text-disabled);
+}
+
+.btn-outline {
+  background-color: transparent;
+  border-color: var(--color-border);
+  color: var(--color-text);
+
+  &:hover:not(:disabled, .is-disabled) {
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+  }
+
+  &:disabled,
+  &.is-disabled {
+    border-color: var(--color-border-subtle);
+    color: var(--color-text-disabled);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 7. Formularios (inputs → Body Large, errores → Body XSmall)
+// -----------------------------------------------------------------------------
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+}
+
+.form-label {
+  @include type(body-md);
+  color: var(--color-text-muted);
+}
+
+.input,
+.select,
+.textarea {
+  @include type(body-lg);
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+
+  &::placeholder {
+    color: var(--color-text-disabled);
+  }
+
+  &:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-focus-ring);
+  }
+
+  // Campo no editable con dato por defecto
+  &:disabled,
+  &[readonly] {
+    background-color: var(--color-field-readonly-bg);
+    color: var(--color-field-readonly-text);
+    border-color: var(--color-field-readonly-border);
+    cursor: not-allowed;
+  }
+
+  &.is-invalid {
+    border-color: var(--color-error-text);
+  }
+}
+
+.form-error {
+  @include type(body-xs);
+  color: var(--color-error-text);
+}
+
+// -----------------------------------------------------------------------------
+// 8. Layout: header, botonera, footer
+// -----------------------------------------------------------------------------
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.5rem;
+  background-color: var(--color-header-bg);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.toolbar {
+  display: flex;
+  background-color: var(--color-toolbar-bg);
+  color: var(--color-toolbar-text);
+
+  &__item {
+    @include type(body-md);
+    padding: 0.75rem 1rem;
+    color: var(--color-toolbar-text);
+    background-color: transparent;
+    border: 0;
+    cursor: pointer;
+
+    &:nth-child(even) {
+      background-color: var(--color-toolbar-alt);
+    }
+
+    &:hover,
+    &.is-active {
+      color: var(--color-primary);
+    }
+  }
+}
+
+.app-footer {
+  @include type(body-sm);
+  padding: 1rem 1.5rem;
+  color: var(--color-toolbar-text);
+  background-color: var(--color-toolbar-bg);
+}
+
+// -----------------------------------------------------------------------------
+// 9. Superficies y feedback
+// -----------------------------------------------------------------------------
+.card {
+  padding: 1.5rem;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.list-title {
+  @include type(h6);
+}
+
+.alert {
+  @include type(body-md);
+  padding: 0.75rem 1rem;
+  border-left: 4px solid;
+  border-radius: var(--radius-sm);
+
+  &--ok {
+    background-color: var(--color-ok-container);
+    border-color: var(--color-ok);
+    color: var(--color-ok-text);
+  }
+
+  &--error {
+    background-color: var(--color-error-container);
+    border-color: var(--color-error);
+    color: var(--color-error-text);
+  }
+}
+
+.text-ok {
+  color: var(--color-ok-text);
+}
+
+.text-error {
+  color: var(--color-error-text);
+}
+
+.text-muted {
+  color: var(--color-text-muted);
+}

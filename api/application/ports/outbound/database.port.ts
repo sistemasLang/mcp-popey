@@ -4,19 +4,8 @@
  * and must guarantee that nothing is ever written.
  */
 export interface ReadOnlyDatabasePort {
-  /** Runs a parameterized SELECT compiled by QueryCompiler (query_circuit). */
-  executeSelect(databaseKey: string, sql: string, params: unknown[], options: SelectOptions): Promise<SelectResult>;
   /** Runs one read-only statement written by the model (query_sql). */
   executeSql(databaseKey: string, sql: string, options: SqlOptions): Promise<SqlResult>;
-}
-
-export interface SelectResult {
-  rows: Record<string, unknown>[];
-  rowCount: number;
-}
-
-export interface SelectOptions {
-  timeoutMs: number;
 }
 
 export interface SqlOptions {

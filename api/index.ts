@@ -7,9 +7,9 @@ import { buildServer, loadRuntimeConfig } from './composition/bootstrap.js';
 /** Upper bound for a graceful stop; open SSE streams must not block a pm2 restart. */
 const SHUTDOWN_TIMEOUT_MS = 5_000;
 
-function main(): void {
+async function main(): Promise<void> {
   const config = loadRuntimeConfig();
-  const { app, summary } = buildServer(config);
+  const { app, summary } = await buildServer(config);
 
   app.httpServer.on('error', (error: NodeJS.ErrnoException) => {
     const reason =
@@ -36,9 +36,7 @@ function main(): void {
   process.once('SIGTERM', shutdown);
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : error);
   process.exit(1);
-}
+});

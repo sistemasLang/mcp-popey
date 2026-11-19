@@ -1,14 +1,17 @@
-import type { User, UserRecord } from '../../../domain/user.js';
+import type { User } from '../../../domain/user.js';
 
-/** Read side used on every request (authentication). */
+/** Read side used on every request (authentication) and by the admin listing. */
 export interface UserRepository {
+  /** Disabled users are still returned; callers check `enabled`. */
+  findByIdentity(issuer: string, subject: string): Promise<User | null>;
   findById(id: string): Promise<User | null>;
-  /** Resolves a token hash to a user id. Disabled users are still returned; callers check `enabled`. */
-  findIdByTokenHash(tokenSha256: string): Promise<string | null>;
+  list(): Promise<User[]>;
 }
 
-/** Write side, used only by the user-management CLI. */
+/** Write side, used by the admin use cases and the admin bootstrap. */
 export interface UserAdminRepository {
-  findRecordByUsername(username: string): UserRecord | undefined;
-  save(record: UserRecord): void;
+  /** Inserts or replaces by `id`. Rejects an identity already linked to another user. */
+  save(user: User): Promise<void>;
+  findByLabel(label: string): Promise<User | null>;
+  countEnabledAdmins(): Promise<number>;
 }

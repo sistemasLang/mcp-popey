@@ -101,7 +101,7 @@ describe('multi-tenant through the MCP (HTTP, real PostgreSQL)', () => {
   let clientA: McpClient;
   let clientB: McpClient;
 
-  const facturas = { circuit: 'venta', table: 'stock.factura_venta', select: ['nfacturaventa', 'vnumero', 'dfecha', 'ftotal'] };
+  const facturas = { sql: 'SELECT nfacturaventa, vnumero, dfecha, ftotal FROM stock.factura_venta ORDER BY nfacturaventa' };
 
   beforeAll(async () => {
     app = await startTestApp([userA, userB], {
@@ -117,89 +117,31 @@ describe('multi-tenant through the MCP (HTTP, real PostgreSQL)', () => {
   });
 
   it('UserA sees only database A, UserB only database B', async () => {
-    const a = await callTool(clientA, 'query_circuit', { ...facturas, orderBy: [{ field: 'nfacturaventa', direction: 'asc' }] });
-    const b = await callTool(clientB, 'query_circuit', facturas);
+    const a = await callTool(clientA, 'query_sql', facturas);
+    const b = await callTool(clientB, 'query_sql', facturas);
 
     expect(a.isError).toBe(false);
     expect(a.data.rows.map((row: { vnumero: string }) => row.vnumero)).toEqual(['A-0001', 'A-0002', 'A-0003']);
     expect(b.data.rows.map((row: { vnumero: string }) => row.vnumero)).toEqual(['B-0001']);
   });
 
-  it('the same filter returns each tenant its own data', async () => {
-    const filter = { ...facturas, filters: [{ field: 'nfacturaventa', operator: 'eq', value: 1 }] };
-    const a = await callTool(clientA, 'query_circuit', filter);
-    const b = await callTool(clientB, 'query_circuit', filter);
-    expect(a.data.rows[0]).toMatchObject({ vnumero: 'A-0001', ftotal: '1000.00' });
-    expect(b.data.rows[0]).toMatchObject({ vnumero: 'B-0001', ftotal: '5000.00' });
+  it('the same statement returns each tenant its own data', async () => {
+    const one = { sql: 'SELECT vnumero, ftotal FROM stock.factura_venta WHERE nfacturaventa = 1' };
+    const a = await callTool(clientA, 'query_sql', one);
+    const b = await callTool(clientB, 'query_sql', one);
+    expect(a.data.rows[0]).toEqual({ vnumero: 'A-0001', ftotal: '1000.00' });
+    expect(b.data.rows[0]).toEqual({ vnumero: 'B-0001', ftotal: '5000.00' });
   });
 
   it('a manual databaseKey cannot redirect UserA to B', async () => {
-    const outcome = await callTool(clientA, 'query_circuit', { ...facturas, databaseKey: 'tenant_b' });
+    const outcome = await callTool(clientA, 'query_sql', { ...facturas, databaseKey: 'tenant_b' });
     expect(outcome.isError).toBe(true);
     expect(JSON.stringify(outcome.data)).not.toContain('B-0001');
   });
 
   it('DATE comes back as YYYY-MM-DD (no timezone shift)', async () => {
-    const a = await callTool(clientA, 'query_circuit', { ...facturas, filters: [{ field: 'nfacturaventa', operator: 'eq', value: 1 }] });
+    const a = await callTool(clientA, 'query_sql', { sql: 'SELECT dfecha FROM stock.factura_venta WHERE nfacturaventa = 1' });
     expect(a.data.rows[0].dfecha).toBe('2026-10-01');
-  });
-
-  it('operators work against PostgreSQL', async () => {
-    const run = async (filters: unknown[], orderBy?: unknown[]) =>
-      (await callTool(clientA, 'query_circuit', { ...facturas, filters, orderBy })).data.rows.map(
-        (row: { vnumero: string }) => row.vnumero,
-      );
-
-    expect(await run([{ field: 'dfecha', operator: 'gte', value: '2026-10-01' }], [{ field: 'dfecha', direction: 'asc' }])).toEqual(['A-0001', 'A-0002']);
-    expect(await run([{ field: 'ncliente', operator: 'in', value: [100, 102] }], [{ field: 'ncliente', direction: 'desc' }])).toEqual(['A-0003', 'A-0001']);
-    expect(await run([{ field: 'vnumero', operator: 'contains', value: '0002' }])).toEqual(['A-0002']);
-    expect(await run([{ field: 'vnumero', operator: 'startsWith', value: 'a-' }])).toHaveLength(3);
-    expect(await run([{ field: 'vnumero', operator: 'contains', value: '%' }])).toEqual([]);
-    expect(await run([{ field: 'vafip_cae', operator: 'isNull' }])).toHaveLength(3);
-    expect(await run([{ field: 'ftotal', operator: 'lt', value: 100 }])).toEqual(['A-0003']);
-  });
-
-  it('LIMIT is applied', async () => {
-    const a = await callTool(clientA, 'query_circuit', { ...facturas, limit: 2 });
-    expect(a.data.rows).toHaveLength(2);
-    expect(a.data.limit).toBe(2);
-  });
-
-  it('a column that exists in the table but not in key_columns is not reachable', async () => {
-    const outcome = await callTool(clientA, 'query_circuit', { ...facturas, select: ['vsecreto'] });
-    expect(outcome.data.error.code).toBe('COLUMN_NOT_ALLOWED');
-  });
-
-  it.each([
-    "'; DROP TABLE stock.factura_venta; --",
-    '1 OR 1=1',
-    "A-0001' OR '1'='1",
-    'x UNION SELECT vpassword FROM seguridad.usuario',
-  ])('injection as a value is inert in PostgreSQL: %s', async (payload) => {
-    const outcome = await callTool(clientA, 'query_circuit', {
-      ...facturas,
-      filters: [{ field: 'vnumero', operator: 'eq', value: payload }],
-    });
-    expect(outcome.isError).toBe(false);
-    expect(outcome.data.rows).toEqual([]);
-
-    const after = await callTool(clientA, 'query_circuit', facturas);
-    expect(after.data.rows).toHaveLength(3);
-  });
-
-  it('a malformed value gets a curated error, not PostgreSQL text', async () => {
-    const outcome = await callTool(clientA, 'query_circuit', {
-      ...facturas,
-      filters: [{ field: 'dfecha', operator: 'eq', value: 'not-a-date' }],
-    });
-    expect(outcome.data.error).toEqual({ code: 'INVALID_QUERY', message: 'A filter value is not valid for its column type' });
-  });
-
-  it('a documented column missing in the real table gets a curated error', async () => {
-    const outcome = await callTool(clientA, 'query_circuit', { ...facturas, select: ['bpagada'] });
-    expect(outcome.data.error.code).toBe('DATABASE_QUERY_ERROR');
-    expect(outcome.data.error.message).toMatch(/does not exist in this database/);
-    expect(JSON.stringify(outcome.data)).not.toMatch(/column .*bpagada.* does not exist|SELECT/);
   });
 });
 
@@ -282,12 +224,11 @@ describe('PostgresDatabaseAdapter barriers', () => {
     });
     const adapter = new PostgresDatabaseAdapter(pools);
     try {
+      const options = { timeoutMs: 5_000, maxRows: 10 };
       await expect(
-        adapter.executeSelect('owner', "INSERT INTO stock.factura_venta (nfacturaventa) VALUES (999)", [], { timeoutMs: 5_000 }),
+        adapter.executeSql('owner', "INSERT INTO stock.factura_venta (nfacturaventa) VALUES (999)", options),
       ).rejects.toBeInstanceOf(DatabaseQueryError);
-      const { rows } = await adapter.executeSelect('owner', 'SELECT count(*)::int AS n FROM stock.factura_venta', [], {
-        timeoutMs: 5_000,
-      });
+      const { rows } = await adapter.executeSql('owner', 'SELECT count(*)::int AS n FROM stock.factura_venta', options);
       expect(rows[0]).toEqual({ n: 3 });
     } finally {
       await pools.closeAll();
@@ -301,11 +242,11 @@ describe('PostgresDatabaseAdapter barriers', () => {
     });
     const adapter = new PostgresDatabaseAdapter(pools);
     try {
-      await expect(adapter.executeSelect('a', 'SELECT pg_sleep(2)', [], { timeoutMs: 200 })).rejects.toBeInstanceOf(
+      await expect(adapter.executeSql('a', 'SELECT pg_sleep(2)', { timeoutMs: 200, maxRows: 10 })).rejects.toBeInstanceOf(
         QueryTimeoutError,
       );
       // The pooled connection is still usable afterwards.
-      const { rows } = await adapter.executeSelect('a', 'SELECT 1 AS ok', [], { timeoutMs: 1_000 });
+      const { rows } = await adapter.executeSql('a', 'SELECT 1 AS ok', { timeoutMs: 1_000, maxRows: 10 });
       expect(rows).toEqual([{ ok: 1 }]);
     } finally {
       await pools.closeAll();
@@ -322,7 +263,7 @@ describe('PostgresDatabaseAdapter barriers', () => {
       expect(pools.getPool('a')).not.toBe(pools.getPool('b'));
       const adapter = new PostgresDatabaseAdapter(pools);
       await Promise.all(
-        Array.from({ length: 10 }, () => adapter.executeSelect('a', 'SELECT 1', [], { timeoutMs: 1_000 })),
+        Array.from({ length: 10 }, () => adapter.executeSql('a', 'SELECT 1', { timeoutMs: 1_000, maxRows: 10 })),
       );
       expect(pools.getPool('a').totalCount).toBeLessThanOrEqual(2);
     } finally {

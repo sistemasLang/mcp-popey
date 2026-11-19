@@ -16,8 +16,6 @@ const CircuitAccessFileSchema = z
         z
           .object({
             circuits: z.array(z.string().regex(CIRCUIT_ID_PATTERN)).default([]),
-            /** Grants query_sql (free read-only SQL). A business decision, like circuits. */
-            sql: z.boolean().default(false),
           })
           .strict(),
       )
@@ -56,15 +54,13 @@ export class RolePolicyLoader {
     }
 
     const roles = new Map<string, ReadonlySet<string>>();
-    const sqlRoles = new Set<string>();
-    for (const [role, { circuits, sql }] of Object.entries(result.data.roles)) {
+    for (const [role, { circuits }] of Object.entries(result.data.roles)) {
       const unknown = circuits.filter((circuit) => !registry.has(circuit));
       if (unknown.length > 0) {
         throw new ConfigurationError(`Role "${role}" in ${origin} references unknown circuits: ${unknown.join(', ')}`);
       }
       roles.set(role, new Set(circuits));
-      if (sql) sqlRoles.add(role);
     }
-    return { roles, sqlRoles, canUseSql: (role: string) => sqlRoles.has(role) };
+    return { roles };
   }
 }

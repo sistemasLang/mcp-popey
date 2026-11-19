@@ -1,9 +1,11 @@
 # EXAMPLE ONLY — not the real Popey permissions.
 #
-# roles.<role>.circuits  circuits the role can list, describe and query with query_circuit.
-# roles.<role>.sql       optional, default false. true enables query_sql: free read-only SQL
-#                        over everything the database role mcp_popey_ro can read, regardless
-#                        of the circuits above. Enable it only by explicit business decision.
+# roles.<role>.circuits  circuits the role sees in list_circuits / describe_circuit.
+#
+# Every role listed here can use query_sql: free read-only SQL over everything the
+# database role mcp_popey_ro can read, regardless of its circuits. A role not listed
+# here has no access at all. Restrictions on what is readable go in the grants of
+# scripts/create_readonly_role.sql, not here.
 
 roles:
   ventas:
@@ -15,7 +17,6 @@ roles:
       - compras
 
   administrador:
-    sql: true
     circuits:
       - venta
       - compras

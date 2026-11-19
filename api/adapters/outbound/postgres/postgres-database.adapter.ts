@@ -9,13 +9,7 @@ import {
 } from '../../../domain/errors.js';
 import type { InternalErrorLogger } from '../../../application/ports/outbound/internal-error-log.port.js';
 import { redactCredentials } from '../logging/stderr-internal-error.logger.js';
-import type {
-  ReadOnlyDatabasePort,
-  SelectOptions,
-  SelectResult,
-  SqlOptions,
-  SqlResult,
-} from '../../../application/ports/outbound/database.port.js';
+import type { ReadOnlyDatabasePort, SqlOptions, SqlResult } from '../../../application/ports/outbound/database.port.js';
 import { typeParsers, type PoolManager } from './pool.manager.js';
 
 const QUERY_CANCELED = '57014';
@@ -35,20 +29,13 @@ export class PostgresDatabaseAdapter implements ReadOnlyDatabasePort {
     private readonly logInternalError: InternalErrorLogger = () => {},
   ) {}
 
-  executeSelect(databaseKey: string, sql: string, params: unknown[], options: SelectOptions): Promise<SelectResult> {
-    return this.inReadOnlyTransaction(databaseKey, options.timeoutMs, toSafeError, async (client) => {
-      const result = await client.query({ text: sql, values: params });
-      return { rows: result.rows as Record<string, unknown>[], rowCount: result.rowCount ?? result.rows.length };
-    });
-  }
-
   /**
    * A cursor uses the extended protocol (Parse/Bind/Execute), so PostgreSQL
    * rejects more than one statement: `COMMIT; ...` cannot leave the READ ONLY
    * transaction. It also reads only maxRows + 1 rows, never the whole result.
    */
   executeSql(databaseKey: string, sql: string, options: SqlOptions): Promise<SqlResult> {
-    return this.inReadOnlyTransaction(databaseKey, options.timeoutMs, toSqlError, async (client) => {
+    return this.inReadOnlyTransaction(databaseKey, options.timeoutMs, async (client) => {
       // The cursor does not inherit the pool's type parsers: pass them explicitly (DATE as text).
       const cursor = client.query(new Cursor(sql, undefined, { types: typeParsers }));
       try {
@@ -65,7 +52,6 @@ export class PostgresDatabaseAdapter implements ReadOnlyDatabasePort {
   private async inReadOnlyTransaction<T>(
     databaseKey: string,
     timeoutMs: number,
-    mapError: (error: unknown) => Error,
     run: (client: pg.PoolClient) => Promise<T>,
   ): Promise<T> {
     const pool = this.pools.getPool(databaseKey);
@@ -87,7 +73,7 @@ export class PostgresDatabaseAdapter implements ReadOnlyDatabasePort {
     } catch (error) {
       this.logInternalError(error);
       broken = !isPgError(error);
-      throw mapError(error);
+      throw toSqlError(error);
     } finally {
       try {
         // Also reverts any SET / set_config() the statement made.
@@ -109,16 +95,16 @@ function readCursor(cursor: Cursor, maxRows: number): Promise<{ rows: Record<str
   });
 }
 
-/** Curated messages by SQLSTATE; PostgreSQL's own text never reaches the client. */
+/** Public code and message by SQLSTATE; PostgreSQL's diagnosis travels apart, in `diagnostics`. */
 function toSafeError(error: unknown, diagnostics?: SqlDiagnostics): Error {
   const options = diagnostics ? { diagnostics } : undefined;
   if (!isPgError(error)) return new DatabaseQueryError('The database could not execute the query');
   const code = error.code ?? '';
   if (code === QUERY_CANCELED) return new QueryTimeoutError('The query exceeded the time limit', options);
-  if (code.startsWith('22')) return new InvalidQueryError('A filter value is not valid for its column type', options);
+  if (code.startsWith('22')) return new InvalidQueryError('A value is not valid for its type', options);
   if (code === INSUFFICIENT_PRIVILEGE) return new AuthorizationError('The database denied access to this table', options);
   if (code === UNDEFINED_TABLE || code === UNDEFINED_COLUMN) {
-    return new DatabaseQueryError('A table or column documented in circuits.yaml does not exist in this database', options);
+    return new DatabaseQueryError('A table or column in the statement does not exist in this database', options);
   }
   if (code === UNDEFINED_FUNCTION) {
     return new InvalidQueryError('This operator is not supported for the column type', options);
@@ -127,8 +113,8 @@ function toSafeError(error: unknown, diagnostics?: SqlDiagnostics): Error {
 }
 
 /**
- * query_sql: same public code by SQLSTATE, plus PostgreSQL's diagnosis so the
- * model can fix its own SQL. Only for errors PostgreSQL returned for the statement.
+ * Public code by SQLSTATE plus PostgreSQL's diagnosis so the model can fix its
+ * own SQL. Only for errors PostgreSQL returned; connection errors stay generic.
  */
 function toSqlError(error: unknown): Error {
   if (!isPgError(error)) return toSafeError(error);

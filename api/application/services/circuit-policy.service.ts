@@ -1,9 +1,5 @@
 import type { UserContext } from '../../domain/user-context.js';
-import {
-  AuthorizationError,
-  CircuitNotFoundError,
-  TableNotAllowedError,
-} from '../../domain/errors.js';
+import { AuthorizationError, CircuitNotFoundError } from '../../domain/errors.js';
 import type { AuthorizationService } from './authorization.service.js';
 import type { CircuitRegistry } from '../../domain/circuits/circuit.registry.js';
 import type { PendingColumn, ResolvedCircuit, ResolvedTable, TableDenyReason } from '../../domain/circuits/circuit.types.js';
@@ -32,8 +28,8 @@ export interface CircuitDescription {
 }
 
 /**
- * Single place for the rules about what a user may see and query inside a
- * circuit. Tools call this; they never inspect circuits.yaml themselves.
+ * Single place for the rules about which circuits a user may see. Tools call
+ * this; they never inspect circuits.yaml themselves.
  */
 export class CircuitPolicyService {
   constructor(
@@ -66,39 +62,6 @@ export class CircuitPolicyService {
     }
     return circuit;
   }
-
-  getQueryableTable(user: UserContext, circuitId: string, tableName: string): ResolvedTable {
-    const circuit = this.getAccessibleCircuit(user, circuitId);
-    const table = circuit.tables.get(tableName);
-    if (!table) {
-      throw new TableNotAllowedError(`Table "${tableName}" does not belong to circuit "${circuitId}"`);
-    }
-    if (!this.authorization.canQueryTable(user, circuitId, tableName)) {
-      throw new TableNotAllowedError(
-        `Table "${tableName}" is not queryable (${table.denyReasons.join(', ') || 'denied'})`,
-      );
-    }
-    return table;
-  }
-
-  isColumnSelectable(table: ResolvedTable, column: string): boolean {
-    return isQueryableColumn(table, column);
-  }
-
-  isColumnFilterable(table: ResolvedTable, column: string): boolean {
-    return isQueryableColumn(table, column);
-  }
-
-  isColumnSortable(table: ResolvedTable, column: string): boolean {
-    return isQueryableColumn(table, column);
-  }
-}
-
-/** MVP rule: only confirmed key_columns of a queryable table, never pending ones. */
-function isQueryableColumn(table: ResolvedTable, column: string): boolean {
-  if (!table.queryable) return false;
-  if (table.pendingColumns.some((pending) => pending.column === column)) return false;
-  return table.columns.includes(column);
 }
 
 function describeTable(table: ResolvedTable): TableDescription {

@@ -1,26 +1,62 @@
 # MCP Popey
 
 Servidor MCP (Node.js + TypeScript) para consultar el ERP Popey en **solo lectura**,
-acotado por **rol** y aislado por **tenant**.
+aislado por **tenant**.
 
 ```
-La IA solicita. Node.js valida y autoriza. El QueryCompiler decide el SQL.
-UserContext decide la base. PostgreSQL aplica la última barrera de solo lectura.
-
-query_sql (opt-in por rol): la IA escribe el SQL; PostgreSQL garantiza que sea lectura.
+La IA escribe el SQL. Node.js autentica y decide la base (UserContext).
+PostgreSQL garantiza que sea lectura y qué se puede leer (rol mcp_popey_ro).
 ```
 
 ## Tools
 
 | Tool | Input | Qué hace |
 |---|---|---|
-| `list_circuits` | — | Circuitos permitidos para el rol del usuario |
-| `describe_circuit` | `circuit` | Tablas, si son consultables y sus columnas permitidas |
-| `query_circuit` | `circuit, table, select, filters?, orderBy?, limit?` | Lectura vía DSL; el servidor compila el SQL |
-| `query_sql` | `sql` | SQL libre de **solo lectura**. Solo para roles con `sql: true` |
+| `list_circuits` | — | Circuitos del ERP visibles para el rol del usuario |
+| `describe_circuit` | `circuit` | Tablas del circuito, qué guarda cada una y sus columnas confirmadas |
+| `query_sql` | `sql` | SQL libre de **solo lectura** sobre la base del tenant |
+
+Los circuitos son documentación de negocio para que la IA escriba el SQL; no limitan
+qué tablas puede leer un rol.
 
 Los inputs son estrictos: mandar `databaseKey`, `schema`, `host`, `params`, etc. es un
 error de validación. Ninguna tool escribe datos.
+
+## Autenticación (OAuth con Auth0)
+
+- `/mcp` es un *OAuth Resource Server*: acepta solo access tokens JWT de Auth0
+  (RS256, `iss` exacto, `aud` = `MCP_RESOURCE_URL`, `exp` con 30 s de tolerancia),
+  verificados localmente contra el JWKS. No hay tokens estáticos.
+- Sin token o con un token inválido: **401** con
+  `WWW-Authenticate: Bearer resource_metadata=".../.well-known/oauth-protected-resource/mcp"`.
+  Los clientes MCP descubren Auth0 desde ahí (RFC 9728) y abren el login solos.
+- Token válido pero sin acceso (identidad no dada de alta, deshabilitada o sin rol + tenant):
+  **403** `Forbidden`, el mismo mensaje en los tres casos.
+- Identidad ≠ autorización: del token solo se toma `(iss, sub)`. El rol, el tenant
+  (`databaseKey`), `admin` y `enabled` viven en `data/users.yaml` (formato v2). Ningún claim
+  de Auth0 decide permisos. `enabled` se chequea en cada request.
+- **Personas** (Claude Code / Desktop / web, ChatGPT, Codex): authorization code + PKCE con
+  email y contraseña en Auth0, sin registro público. Clientes registrados por CIMD; DCR apagado.
+- **Procesos** (n8n): `client_credentials` con una app M2M de Auth0 por cuenta de servicio.
+
+## Panel de administración
+
+`/admin/` (Angular, `frontend/`) y su API `/admin/api/*`, protegida con OAuth y una audiencia
+distinta (`ADMIN_API_AUDIENCE`): un token del panel no sirve en `/mcp` ni al revés. Solo para
+personas con `admin: true`.
+
+- **Invitar persona**: no se envía ningún mail. El panel muestra **una vez** un link de Auth0
+  para que la persona elija su contraseña, y el admin se lo manda por el canal que elija.
+  "Nuevo link" lo regenera (también sirve para "olvidé mi contraseña").
+- **Cuenta de servicio**: devuelve `clientId` y `clientSecret` **una vez**; el secreto nunca se
+  guarda en el servidor. Se puede rotar.
+- Editar rol + tenant, admin y habilitado. Deshabilitar corta el acceso al instante. Siempre
+  queda al menos un admin habilitado.
+- **Primer admin**: se crea a mano en el dashboard de Auth0 (con su propia contraseña) y se
+  vincula al arrancar con `BOOTSTRAP_ADMIN_EMAILS`. El bootstrap solo corre si no hay ningún
+  admin habilitado y nunca crea usuarios en Auth0.
+- Cada escritura queda en la auditoría (`type: "admin"`) con el actor, sin emails, subjects,
+  secretos ni links.
 
 ### `query_sql`
 
@@ -31,49 +67,51 @@ error de validación. Ninguna tool escribe datos.
   y el rol `mcp_popey_ro` solo con `SELECT`.
 - Respuesta `{ columns, rows, rowCount, truncated }`. Como máximo `QUERY_SQL_MAX_ROWS`
   filas (default 1000); `truncated: true` avisa que había más (agregar o paginar en SQL).
-- Timeout propio `QUERY_SQL_TIMEOUT_MS` (default 30000 ms). Comparte cuota de rate limit
-  con `query_circuit`.
+- Timeout `QUERY_SQL_TIMEOUT_MS` (default 30000 ms). Consume la cuota de rate limit por
+  usuario; `list_circuits` y `describe_circuit` no.
 - Los errores de SQL traen `diagnostics` (`sqlState`, mensaje, `hint`, `position`) de
   PostgreSQL. Los de conexión siguen siendo genéricos.
 - Auditoría: hash SHA-256 y largo del SQL, filas y `truncated`; nunca el texto del SQL.
-- Los permisos por circuito **no** acotan a `query_sql`: un rol habilitado lee todo lo que
-  `mcp_popey_ro` puede leer.
-
-Operadores de filtro: `eq neq gt gte lt lte in contains startsWith isNull isNotNull`.
+- Todo rol definido en `circuit-access.yaml` puede usarla y lee todo lo que `mcp_popey_ro`
+  puede leer: no hay límite de tablas por rol. Restringir algo se hace con grants en
+  `scripts/create_readonly_role.sql`.
 
 ## Arquitectura (puertos y adaptadores)
 
 ```
 api/
   domain/          reglas puras: errores, UserContext, catálogo de circuitos,
-                   QueryCompiler, límites. Sin dependencias externas.
+                   límites. Sin dependencias externas.
   application/
-    ports/outbound puertos: ReadOnlyDatabasePort, UserRepository, AuditLogger,
-                   RateLimiterPort, InternalErrorLogger
-    services/      AuthorizationService, CircuitPolicyService, QueryValidator
-    use-cases/     AuthenticateUser, ListCircuits, DescribeCircuit,
-                   QueryCircuit, QuerySql, ManageUsers
+    ports/inbound  AccessTokenVerifier
+    ports/outbound puertos: ReadOnlyDatabasePort, UserRepository, IdentityProviderPort,
+                   AuditLogger, RateLimiterPort, InternalErrorLogger
+    services/      AuthorizationService, CircuitPolicyService
+    use-cases/     AuthenticateUser, AdminUsers, BootstrapAdmins, ListCircuits,
+                   DescribeCircuit, QuerySql
   adapters/
-    inbound/       http (bearer + Streamable HTTP), mcp (tools), cli (usuarios)
-    outbound/      postgres, yaml (circuits, roles, users), audit, memory, logging
+    inbound/       http (JWT, metadata RFC 9728, API admin, Streamable HTTP), mcp (tools)
+    outbound/      postgres, yaml (circuits, roles, users v2), auth0 (Management API),
+                   audit, memory, logging
   composition/     container.ts (cablea puertos ↔ adaptadores), bootstrap.ts (archivos + env)
   config/          lectura y validación del entorno
   index.ts         proceso del servidor (dist/index.js, lo corre pm2)
-  cli/create-user.ts  CLI de usuarios (dist/cli/create-user.js)
+frontend/          panel de administración (Angular), servido por nginx en /admin/
 ```
 
 Las dependencias apuntan hacia adentro: `domain` no importa nada externo y
-`application` solo `domain` y sus puertos. `test/unit/architecture.test.ts` lo verifica.
+`application` solo `domain` y sus puertos. Solo el adapter `auth0` conoce a Auth0 y solo el
+verificador JWT importa `jose`: cambiar de IdP es reconfigurar y reescribir ese adapter.
+`test/unit/architecture.test.ts` lo verifica.
 
 ## Flujo
 
 ```
-Bearer token → BearerAuth → AuthenticateUserUseCase → UserRepository → UserContext (server-side)
-query_circuit → Zod (estructura) → QueryCircuitUseCase: RateLimiter → QueryValidator (autorización)
-  → QueryCompiler (SQL parametrizado) → ReadOnlyDatabasePort(UserContext.databaseKey)
-  → PostgresDatabaseAdapter → Pool → PostgreSQL (BEGIN READ ONLY … ROLLBACK, rol mcp_popey_ro)
-query_sql → Zod ({ sql }) → QuerySqlUseCase: rol con sql → RateLimiter
-  → ReadOnlyDatabasePort(UserContext.databaseKey) (cursor: una sentencia, maxRows + 1) → PostgreSQL
+JWT de Auth0 → JwtAccessTokenVerifier (firma, iss, aud, exp) → (iss, sub)
+  → AuthenticateUserUseCase → UserRepository.findByIdentity → UserContext (server-side)
+query_sql → Zod ({ sql }) → QuerySqlUseCase: rol definido → RateLimiter
+  → ReadOnlyDatabasePort(UserContext.databaseKey) → PostgresDatabaseAdapter → Pool
+  → PostgreSQL (BEGIN READ ONLY … ROLLBACK, cursor: una sentencia, maxRows + 1, rol mcp_popey_ro)
 ```
 
 ## Deploy (VPS con nginx + pm2)
@@ -83,48 +121,59 @@ Guía completa en `docs/INSTALACION-VPS.txt`. Archivos versionados:
 
 ## Reglas de `circuits.yaml`
 
-- Tabla normal → consultable con sus `key_columns` reales.
-- `status` `needs_review` / `legacy` / desconocido → **no** consultable (deny by default).
+`circuits.yaml` es la documentación que `describe_circuit` le da a la IA. `queryable` marca
+qué tablas están confirmadas; no es un permiso (`query_sql` no lo consulta).
+
+- Tabla normal → `queryable: true` con sus `key_columns` reales.
+- `status` `needs_review` / `legacy` / desconocido → `queryable: false`.
 - `key_columns` documentales (`"columnas no confirmadas…"`, `"..."`) se descartan;
-  una tabla sin columnas confirmadas no es consultable.
-- `pending_columns` → solo informativas, nunca seleccionables/filtrables/ordenables.
+  una tabla sin columnas confirmadas queda `queryable: false`.
+- `pending_columns` → solo informativas.
 - La misma tabla en varios circuitos se evalúa **por circuito**; repetida dentro
   de un circuito se fusiona (si una entrada está restringida, gana la restricción).
-- Schema `seguridad` → consultable a propósito solo por el circuito `usuario` (id → nombre/rol). Sus columnas sensibles (password, hashes, 2FA, bloqueo, fecha de nacimiento) no figuran en `key_columns` y el rol `mcp_popey_ro` solo tiene `SELECT` por columna sobre las seguras. `BLOCKED_SCHEMAS` queda vacío, pero el mecanismo sigue activo.
+- Schema `seguridad` → documentado en el circuito `usuario` (id → nombre/rol). Sus columnas sensibles (password, hashes, 2FA, bloqueo, fecha de nacimiento) no figuran en `key_columns` y el rol `mcp_popey_ro` solo tiene `SELECT` por columna sobre las seguras: esa es la barrera real. `BLOCKED_SCHEMAS` queda vacío, pero el mecanismo sigue activo.
 - Un YAML estructuralmente inválido impide arrancar.
 
 ## Permisos por rol
 
-`config/circuit-access.yaml` define, por rol, sus circuitos y si puede usar `query_sql`
-(`sql: true`, default `false`). Los permisos de Popey los define el negocio. Un rol que
-no figura no accede a nada, y la CLI solo crea usuarios con roles definidos. Formato en
+`config/circuit-access.yaml` define los roles y qué circuitos ve cada uno en el catálogo.
+Todo rol definido ahí puede usar `query_sql`; uno que no figura no accede a nada, y el panel
+solo asigna roles definidos. Hoy no hay límite de tablas por rol. Formato en
 `config/circuit-access.example.yaml`.
 
 ## Uso
 
 ```bash
 npm install
-cp .env.example .env          # completar credenciales del rol mcp_popey_ro
+cp .env.example .env          # credenciales del rol mcp_popey_ro + variables de Auth0
 npm run build
 npm start                     # http://127.0.0.1:3030/mcp
+
+cd frontend && npm install
+cp public/config.example.json public/config.json   # issuer, clientId del SPA, audience admin
+npx ng serve                  # panel en http://localhost:4200 (proxy de /admin/api a :3030)
 ```
 
-Usuarios (solo por consola; el token se muestra una vez, se guarda su SHA-256):
+Variables de Auth0 (obligatorias salvo indicación):
+
+| Variable | Qué es |
+|---|---|
+| `AUTH0_DOMAIN` | Dominio del tenant, sin `https://` (`empresa.us.auth0.com`) |
+| `MCP_RESOURCE_URL` | URL pública https de `/mcp` = identifier de la API "MCP" en Auth0 |
+| `ADMIN_API_AUDIENCE` | Identifier de la API "Admin" (distinto del anterior) |
+| `AUTH0_MGMT_CLIENT_ID` / `AUTH0_MGMT_CLIENT_SECRET` | App M2M del servidor para la Management API (scopes mínimos) |
+| `AUTH0_DB_CONNECTION` | Opcional, default `Username-Password-Authentication` |
+| `BOOTSTRAP_ADMIN_EMAILS` | Opcional: emails (ya creados en Auth0) a vincular como admins en el primer arranque |
+| `PASSWORD_LINK_TTL_SECONDS` | Opcional, default 86400 (300 a 604800): vida del link para elegir contraseña |
+
+Si falta una variable, `users.yaml` está en el formato viejo (v1, con tokens) o Auth0 no
+responde durante el bootstrap, el servidor no arranca.
+
+Conectarlo a Claude Code (sin header fijo: el cliente negocia OAuth solo):
 
 ```bash
-node dist/cli/create-user.js --username juan --role ventas --database-key lang
-node dist/cli/create-user.js --username juan --rotate
-node dist/cli/create-user.js --username juan --disable
-```
-
-La CLI valida que el rol exista en `circuit-access.yaml`, que el `databaseKey`
-esté en `DATABASE_KEYS` y que el username sea único. Los cambios se aplican sin reiniciar.
-
-Conectarlo a Claude Code:
-
-```bash
-claude mcp add --transport http popey http://127.0.0.1:3030/mcp \
-  --header "Authorization: Bearer <token>"
+claude mcp add --transport http popey https://<DOMINIO>/mcp
+# dentro de Claude Code: /mcp → popey → Authenticate
 ```
 
 ## Rol PostgreSQL

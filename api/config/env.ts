@@ -3,7 +3,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { ConfigurationError } from '../domain/errors.js';
-import { QUERY_LIMITS, SQL_QUERY_LIMITS } from '../domain/security/query-limits.js';
+import { SQL_QUERY_LIMITS } from '../domain/security/query-limits.js';
 
 /**
  * Project root (the folder holding package.json, config/ and data/), from this
@@ -35,22 +35,40 @@ const rootPath = (fallback: string) => z.string().default(fallback).transform(re
 
 const positiveInt = (fallback: number) => z.coerce.number().int().positive().default(fallback);
 
+const required = z.string({ error: 'is required' }).min(1, 'is required');
+
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Comma-separated emails, lower-cased. Messages never echo the values. */
+const emailList = z
+  .string()
+  .default('')
+  .transform((value) => value.split(',').map((email) => email.trim().toLowerCase()).filter(Boolean))
+  .refine((emails) => emails.every((email) => EMAIL.test(email)), 'must be a comma-separated list of valid emails');
+
 const EnvSchema = z.object({
+  AUTH0_DOMAIN: required.regex(/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i, 'must be a host name such as empresa.us.auth0.com (no scheme)'),
+  MCP_RESOURCE_URL: required.refine((value) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:' && !url.search && !url.hash;
+    } catch {
+      return false;
+    }
+  }, 'must be an absolute https URL (the public URL of /mcp)'),
+  ADMIN_API_AUDIENCE: required,
+  AUTH0_MGMT_CLIENT_ID: required,
+  AUTH0_MGMT_CLIENT_SECRET: required,
+  AUTH0_DB_CONNECTION: z.string().default('Username-Password-Authentication'),
+  BOOTSTRAP_ADMIN_EMAILS: emailList,
+  PASSWORD_LINK_TTL_SECONDS: z.coerce.number().int().min(300).max(604_800).default(86_400),
+
   MCP_HOST: z.string().default('127.0.0.1'),
   MCP_PORT: z.coerce.number().int().min(1).max(65535).default(3030),
   CIRCUITS_FILE: rootPath('config/circuits.yaml'),
   CIRCUIT_ACCESS_FILE: rootPath('config/circuit-access.yaml'),
   USERS_FILE: rootPath('data/users.yaml'),
   AUDIT_LOG_FILE: z.string().transform(resolveFromRoot).optional(),
-
-  QUERY_DEFAULT_ROWS: positiveInt(QUERY_LIMITS.defaultRows),
-  QUERY_MAX_ROWS: positiveInt(QUERY_LIMITS.maxRows),
-  QUERY_MAX_SELECTED_COLUMNS: positiveInt(QUERY_LIMITS.maxSelectedColumns),
-  QUERY_MAX_FILTERS: positiveInt(QUERY_LIMITS.maxFilters),
-  QUERY_MAX_ORDER_BY: positiveInt(QUERY_LIMITS.maxOrderBy),
-  QUERY_MAX_IN_VALUES: positiveInt(QUERY_LIMITS.maxInValues),
-  QUERY_MAX_VALUE_LENGTH: positiveInt(QUERY_LIMITS.maxValueLength),
-  QUERY_TIMEOUT_MS: positiveInt(QUERY_LIMITS.timeoutMs),
 
   QUERY_SQL_MAX_ROWS: positiveInt(SQL_QUERY_LIMITS.maxRows),
   QUERY_SQL_TIMEOUT_MS: positiveInt(SQL_QUERY_LIMITS.timeoutMs),
@@ -68,8 +86,8 @@ export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
   if (!result.success) {
     throw new ConfigurationError(`Invalid environment:\n${z.prettifyError(result.error)}`);
   }
-  if (result.data.QUERY_DEFAULT_ROWS > result.data.QUERY_MAX_ROWS) {
-    throw new ConfigurationError('QUERY_DEFAULT_ROWS cannot be greater than QUERY_MAX_ROWS');
+  if (result.data.ADMIN_API_AUDIENCE === result.data.MCP_RESOURCE_URL) {
+    throw new ConfigurationError('ADMIN_API_AUDIENCE must differ from MCP_RESOURCE_URL');
   }
   return result.data;
 }

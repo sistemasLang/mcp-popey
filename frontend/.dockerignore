@@ -1,0 +1,7 @@
+node_modules
+dist
+.angular
+# Runtime config is mounted, never baked into the image.
+public/config.json
+Dockerfile
+README.md

@@ -1,23 +1,33 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
+import type { AccessTokenVerifier } from '../../../application/ports/inbound/access-token-verifier.port.js';
 import type { InternalErrorLogger } from '../../../application/ports/outbound/internal-error-log.port.js';
-import { AuthenticationError } from '../../../domain/errors.js';
-import type { UserContext } from '../../../domain/user-context.js';
+import type { AdminUsersUseCase } from '../../../application/use-cases/admin-users.use-case.js';
+import type { AuthenticateUserUseCase } from '../../../application/use-cases/authenticate-user.use-case.js';
+import { AuthenticationError, ForbiddenError } from '../../../domain/errors.js';
+import type { Principal } from '../../../domain/user-context.js';
 import { createMcpServer, type McpUseCases } from '../mcp/mcp-server.js';
-import type { BearerAuth } from './bearer-auth.js';
+import { ADMIN_API_PREFIX, handleAdminApi } from './admin-api.js';
+import { bearerToken } from './bearer-token.js';
 
 export const MCP_PATH = '/mcp';
+export const PROTECTED_RESOURCE_METADATA_PATH = '/.well-known/oauth-protected-resource';
+const METADATA_PATHS = new Set([PROTECTED_RESOURCE_METADATA_PATH, `${PROTECTED_RESOURCE_METADATA_PATH}${MCP_PATH}`]);
 
 export interface HttpServerDependencies {
-  auth: BearerAuth;
+  tokens: AccessTokenVerifier;
+  authenticateUser: AuthenticateUserUseCase;
+  adminUsers: AdminUsersUseCase;
+  /** MCP_RESOURCE_URL and the issuer that clients must get tokens from. */
+  resource: { url: string; authorizationServer: string };
   mcp: McpUseCases;
   logInternalError: InternalErrorLogger;
 }
 
 /**
- * Stateless Streamable HTTP: one McpServer + transport per request, created
- * only after the bearer token has been turned into a UserContext.
- * Meant to listen on 127.0.0.1 behind a TLS reverse proxy (nginx).
+ * Routes: /mcp (OAuth resource server, stateless Streamable HTTP), the
+ * protected resource metadata (RFC 9728, public) and /admin/api. Everything
+ * else is 404. Meant to listen on 127.0.0.1 behind a TLS reverse proxy (nginx).
  */
 export function createHttpServer(deps: HttpServerDependencies): Server {
   return createServer((request, response) => {
@@ -30,24 +40,34 @@ export function createHttpServer(deps: HttpServerDependencies): Server {
 
 async function handle(request: IncomingMessage, response: ServerResponse, deps: HttpServerDependencies): Promise<void> {
   const path = new URL(request.url ?? '/', 'http://localhost').pathname;
+  if (METADATA_PATHS.has(path)) return writeMetadata(request, response, deps);
+  if (path.startsWith(ADMIN_API_PREFIX)) return handleAdminApi(request, response, path, deps);
   if (path !== MCP_PATH) {
     response.writeHead(404).end();
     return;
   }
 
-  let user: UserContext;
+  let principal: Principal;
   try {
-    user = await deps.auth.authenticate(request);
+    const identity = await deps.tokens.verify(bearerToken(request), 'mcp');
+    principal = await deps.authenticateUser.execute(identity);
   } catch (error) {
     if (error instanceof AuthenticationError) {
-      response.setHeader('WWW-Authenticate', 'Bearer realm="mcp-popey"');
+      // Tells MCP clients where to discover the authorization server (RFC 9728).
+      const metadataUrl = `${new URL(deps.resource.url).origin}${PROTECTED_RESOURCE_METADATA_PATH}${MCP_PATH}`;
+      response.setHeader('WWW-Authenticate', `Bearer resource_metadata="${metadataUrl}"`);
       writeJsonRpcError(response, 401, -32001, 'Unauthorized');
+      return;
+    }
+    if (error instanceof ForbiddenError) {
+      // Valid token, no access: 403 (a 401 would make MCP clients loop through login).
+      writeJsonRpcError(response, 403, -32003, 'Forbidden');
       return;
     }
     throw error;
   }
 
-  const server = createMcpServer(user, deps.mcp);
+  const server = createMcpServer(principal, deps.mcp);
   const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   response.on('close', () => {
     void transport.close();
@@ -56,6 +76,22 @@ async function handle(request: IncomingMessage, response: ServerResponse, deps: 
 
   await server.connect(transport);
   await transport.handleRequest(request, response);
+}
+
+function writeMetadata(request: IncomingMessage, response: ServerResponse, deps: HttpServerDependencies): void {
+  if (request.method !== 'GET') {
+    response.writeHead(405, { Allow: 'GET' }).end();
+    return;
+  }
+  response
+    .writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' })
+    .end(
+      JSON.stringify({
+        resource: deps.resource.url,
+        authorization_servers: [deps.resource.authorizationServer],
+        bearer_methods_supported: ['header'],
+      }),
+    );
 }
 
 function writeJsonRpcError(response: ServerResponse, status: number, code: number, message: string): void {

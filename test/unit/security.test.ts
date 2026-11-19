@@ -67,3 +67,28 @@ describe('redactCredentials', () => {
     expect(redactCredentials('no secrets here')).toBe('no secrets here');
   });
 });
+
+describe('JsonLinesAuditLogger', () => {
+  it('writes tool events as type "audit" and admin events as type "admin" to the same file', async () => {
+    const { mkdtempSync, readFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { JsonLinesAuditLogger } = await import('../../api/adapters/outbound/audit/json-lines-audit.logger.js');
+    const file = join(mkdtempSync(join(tmpdir(), 'audit-')), 'audit.jsonl');
+    const logger = new JsonLinesAuditLogger(file);
+    logger.log({
+      timestamp: 't',
+      userId: 'u',
+      principalKind: 'service',
+      role: 'ventas',
+      databaseKey: 'lang',
+      tool: 'list_circuits',
+      durationMs: 1,
+      success: true,
+    });
+    logger.logAdmin({ timestamp: 't', actorUserId: 'bootstrap', action: 'bootstrap_admin', targetUserId: 'a', changedFields: ['admin'], success: true });
+    const lines = readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(lines.map((line) => line.type)).toEqual(['audit', 'admin']);
+    expect(lines[0]).toMatchObject({ principalKind: 'service' });
+  });
+});

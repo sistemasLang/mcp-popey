@@ -1,20 +1,10 @@
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { BearerAuth } from '../../api/adapters/inbound/http/bearer-auth.js';
-import { AuthenticateUserUseCase } from '../../api/application/use-cases/authenticate-user.use-case.js';
-import { generateToken, hashToken } from '../../api/domain/auth-token.js';
 import type { UserContext } from '../../api/domain/user-context.js';
 import { CircuitPolicyService } from '../../api/application/services/circuit-policy.service.js';
-import {
-  AuthenticationError,
-  AuthorizationError,
-  CircuitNotFoundError,
-  ConfigurationError,
-  TableNotAllowedError,
-} from '../../api/domain/errors.js';
+import { AuthorizationError, CircuitNotFoundError, ConfigurationError } from '../../api/domain/errors.js';
 import { AuthorizationService } from '../../api/application/services/authorization.service.js';
 import { RolePolicyLoader } from '../../api/adapters/outbound/yaml/role-policy.loader.js';
-import { InMemoryUserRepository } from '../../api/adapters/outbound/memory/in-memory-user.repository.js';
 import { loadTestRegistry } from '../helpers.js';
 
 const registry = loadTestRegistry();
@@ -49,29 +39,15 @@ describe('RolePolicyLoader', () => {
     expect(RolePolicyLoader.parse('roles: {}\n', registry).roles.size).toBe(0);
   });
 
-  it('sql is opt-in per role: absent means no query_sql', () => {
-    const parsed = RolePolicyLoader.parse('roles:\n  a:\n    circuits: [venta]\n  b:\n    circuits: [venta]\n    sql: true\n', registry);
-    expect(parsed.canUseSql('a')).toBe(false);
-    expect(parsed.canUseSql('b')).toBe(true);
-    expect(parsed.canUseSql('unknown')).toBe(false);
-    expect([...parsed.sqlRoles]).toEqual(['b']);
-  });
-
-  it('sql: true does not grant any circuit by itself', () => {
-    const parsed = RolePolicyLoader.parse('roles:\n  analista:\n    sql: true\n', registry);
-    expect(parsed.canUseSql('analista')).toBe(true);
-    expect(new AuthorizationService(parsed, registry).canAccessCircuit({ userId: 'x', role: 'analista', databaseKey: 'a' }, 'venta')).toBe(false);
-  });
-
-  it('the shipped example loads and enables sql only for administrador', () => {
+  it('the shipped example loads', () => {
     const example = fileURLToPath(new URL('../../config/circuit-access.example.yaml', import.meta.url));
-    const parsed = RolePolicyLoader.loadFile(example, registry);
-    expect([...parsed.sqlRoles]).toEqual(['administrador']);
-    expect(parsed.canUseSql('ventas')).toBe(false);
+    expect([...RolePolicyLoader.loadFile(example, registry).roles.keys()]).toEqual(['ventas', 'compras', 'administrador']);
   });
 
-  it.each(['"si"', '1', 'yes please'])('refuses a non-boolean sql flag (%s)', (value) => {
-    expect(() => RolePolicyLoader.parse(`roles:\n  a:\n    circuits: [venta]\n    sql: ${value}\n`, registry)).toThrow(ConfigurationError);
+  it('refuses the removed per-role sql flag instead of silently ignoring it', () => {
+    expect(() => RolePolicyLoader.parse('roles:\n  a:\n    circuits: [venta]\n    sql: true\n', registry)).toThrow(
+      ConfigurationError,
+    );
   });
 });
 
@@ -90,23 +66,15 @@ describe('AuthorizationService', () => {
     expect(authorization.canAccessCircuit(ventas, 'inexistente')).toBe(false);
   });
 
-  it('table must be queryable AND in an accessible circuit', () => {
-    expect(authorization.canQueryTable(ventas, 'venta', 'stock.factura_venta')).toBe(true);
-    expect(authorization.canQueryTable(ventas, 'envio_comprobantes', 'stock.factura_venta')).toBe(true);
-    // Same table, accessible circuit where it is needs_review.
-    expect(authorization.canQueryTable(compras, 'review_cases', 'stock.factura_venta')).toBe(false);
-    // Same table, circuit the role cannot access.
-    expect(authorization.canQueryTable(compras, 'venta', 'stock.factura_venta')).toBe(false);
-    // Table outside the circuit.
-    expect(authorization.canQueryTable(ventas, 'venta', 'compra.orden_compra')).toBe(false);
+  it('query_sql is available to every role in circuit-access.yaml, whatever its circuits', () => {
+    expect(authorization.canUseSql(ventas)).toBe(true);
+    expect(authorization.canUseSql(auditor)).toBe(true);
+    const noCircuits = RolePolicyLoader.parse('roles:\n  analista: {}\n', registry);
+    expect(new AuthorizationService(noCircuits, registry).canUseSql({ userId: 'x', role: 'analista', databaseKey: 'a' })).toBe(true);
   });
 
-  it('seguridad.* is queryable only by a role granted the usuario circuit', () => {
-    expect(authorization.canAccessCircuit(auditor, 'usuario')).toBe(true);
-    for (const table of ['seguridad.usuario', 'seguridad.usuarioxrol', 'seguridad.rol', 'seguridad.view_usuario']) {
-      expect(authorization.canQueryTable(auditor, 'usuario', table)).toBe(true);
-      expect(authorization.canQueryTable(ventas, 'usuario', table)).toBe(false);
-    }
+  it('denies query_sql to a role not present in circuit-access.yaml', () => {
+    expect(authorization.canUseSql(nobody)).toBe(false);
   });
 });
 
@@ -142,50 +110,12 @@ describe('CircuitPolicyService', () => {
     expect(items?.columns).not.toContain('fimpinterno');
   });
 
-  it('getQueryableTable rejects non-queryable tables with a reason', () => {
-    expect(() => circuits.getQueryableTable(compras, 'review_cases', 'stock.factura_compra')).toThrow(/legacy/);
-    expect(() => circuits.getQueryableTable(compras, 'review_cases', 'stock.articulo')).toThrow(TableNotAllowedError);
-  });
-
-  it('seguridad tables never expose sensitive columns', () => {
-    const usuario = circuits.getQueryableTable(auditor, 'usuario', 'seguridad.usuario');
+  it('describeCircuit never lists sensitive seguridad columns', () => {
+    const usuario = circuits.describeCircuit(auditor, 'usuario').tables.find((table) => table.table === 'seguridad.usuario');
+    expect(usuario?.columns).toContain('nusuario');
     for (const column of ['vpassword', 'vhashrecupclave', 'vcodigo2fa', 'bautenticacion2fa', 'bbloqueoauto', 'dfechanacimiento']) {
-      expect(circuits.isColumnSelectable(usuario, column), column).toBe(false);
+      expect(usuario?.columns, column).not.toContain(column);
     }
-    expect(circuits.isColumnSelectable(usuario, 'nusuario')).toBe(true);
-  });
-
-  it('pending columns are not selectable, filterable nor sortable', () => {
-    const items = circuits.getQueryableTable(compras, 'review_cases', 'compra.facturas_compra_items');
-    expect(circuits.isColumnSelectable(items, 'fimpinterno')).toBe(false);
-    expect(circuits.isColumnFilterable(items, 'fimpinterno')).toBe(false);
-    expect(circuits.isColumnSortable(items, 'fimpinterno')).toBe(false);
-    expect(circuits.isColumnSelectable(items, 'narticulo')).toBe(true);
   });
 });
 
-describe('Authentication', () => {
-  const tokenA = generateToken();
-  const tokenDisabled = generateToken();
-  const users = new InMemoryUserRepository([
-    { id: 'u1', username: 'ana', role: 'ventas', databaseKey: 'lang', enabled: true, tokenSha256: hashToken(tokenA), createdAt: '' },
-    { id: 'u2', username: 'beto', role: 'ventas', databaseKey: 'lang', enabled: false, tokenSha256: hashToken(tokenDisabled), createdAt: '' },
-  ]);
-  const middleware = new BearerAuth(new AuthenticateUserUseCase(users));
-
-  it('valid token → UserContext built server-side', async () => {
-    const context = await middleware.authenticate({ headers: { authorization: `Bearer ${tokenA}` } });
-    expect(context).toEqual({ userId: 'u1', role: 'ventas', databaseKey: 'lang' });
-    expect(Object.isFrozen(context)).toBe(true);
-  });
-
-  it.each([
-    ['no header', {}],
-    ['wrong scheme', { authorization: `Basic ${tokenA}` }],
-    ['unknown token', { authorization: `Bearer ${generateToken()}` }],
-    ['garbage token', { authorization: "Bearer ' OR 1=1 --" }],
-    ['disabled user', { authorization: `Bearer ${tokenDisabled}` }],
-  ])('rejects %s', async (_case, headers) => {
-    await expect(middleware.authenticate({ headers })).rejects.toThrow(AuthenticationError);
-  });
-});

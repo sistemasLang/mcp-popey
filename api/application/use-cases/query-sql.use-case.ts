@@ -9,7 +9,7 @@ import type { UserContext } from '../../domain/user-context.js';
  * query_sql: role check → RateLimiter → ReadOnlyDatabasePort. The SQL is
  * never parsed nor rewritten; read-only is enforced by the database adapter
  * (READ ONLY transaction, single statement) and the PostgreSQL role grants.
- * Like query_circuit, the target database is always UserContext.databaseKey.
+ * The target database is always UserContext.databaseKey; there is no other way to pick one.
  */
 export class QuerySqlUseCase {
   constructor(
@@ -22,7 +22,7 @@ export class QuerySqlUseCase {
   execute(user: UserContext, sql: string): Promise<SqlResult> {
     // The MCP adapter does not even list the tool for these roles; checked again on purpose.
     if (!this.authorization.canUseSql(user)) {
-      throw new AuthorizationError('query_sql is not enabled for this role');
+      throw new AuthorizationError('query_sql is not available for this role');
     }
     this.rateLimiter.consume(user.userId);
     return this.database.executeSql(user.databaseKey, sql, {

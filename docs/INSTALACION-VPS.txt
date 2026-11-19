@@ -26,8 +26,9 @@ maquina se esta.
 
 En la VPS:
   /opt/mcp-popey/                         app, Node 22 propio, cache de
-                                          npm, logs, datos y (Opcion A)
-                                          deploy key de GitHub
+                                          npm, logs, datos, panel de
+                                          administracion (panel/admin/) y
+                                          (Opcion A) deploy key de GitHub
   /etc/nginx/sites-available/mcp-popey    sitio de nginx
   /etc/nginx/sites-enabled/mcp-popey      symlink al sitio
   /etc/letsencrypt/...                    certificado de mcp.<dominio>
@@ -38,6 +39,8 @@ Fuera de la VPS:
   Servidor de base de datos: rol mcp_popey_ro, regla en pg_hba.conf,
     regla de firewall para la IP de la VPS
   GitHub (solo Opcion A): deploy key en el repo sistemasLang/mcp-popey
+  Auth0: tenant con 2 APIs, la app del panel y la app M2M del servidor
+    (seccion 6)
 
 NO se toca: el Node del sistema, ~/.ssh, ~/.npm, pm2 (solo se agrega un
 proceso), los otros sitios de nginx ni los otros procesos de pm2.
@@ -249,14 +252,27 @@ Valores obligatorios:
   CIRCUIT_ACCESS_FILE=config/circuit-access.yaml
   USERS_FILE=data/users.yaml
 
+  Auth0 (ver seccion 6 para obtener cada valor):
+  AUTH0_DOMAIN=<tenant>.us.auth0.com          sin https://
+  MCP_RESOURCE_URL=https://<DOMINIO>/mcp      identifier de la API "MCP"
+  ADMIN_API_AUDIENCE=https://<DOMINIO>/admin-api
+                                              identifier de la API "Admin"
+                                              (distinto del anterior)
+  AUTH0_MGMT_CLIENT_ID=<client id de la app M2M del servidor>
+  AUTH0_MGMT_CLIENT_SECRET=<client secret de esa app>
+  AUTH0_DB_CONNECTION=Username-Password-Authentication
+  BOOTSTRAP_ADMIN_EMAILS=<email del primer admin>   (seccion 6.2)
+  PASSWORD_LINK_TTL_SECONDS=86400             vida del link para elegir
+                                              contrasena (300 a 604800)
+
 Una variable vacia (VAR=) toma el valor por defecto. Las rutas
 relativas se resuelven desde /opt/mcp-popey/app (no desde la carpeta
-donde se ejecuta el comando), asi el servidor y la CLI usan siempre
-el mismo .env y el mismo data/users.yaml.
+donde se ejecuta el comando).
 
 Lo unico que si debe completarse es DB_<KEY>_HOST / _NAME / _USER /
-_PASSWORD de cada base listada en DATABASE_KEYS: si falta alguno, el
-MCP no arranca y pm2 logs dice cual.
+_PASSWORD de cada base listada en DATABASE_KEYS y las variables
+AUTH0_* / MCP_RESOURCE_URL / ADMIN_API_AUDIENCE: si falta alguna, el
+MCP no arranca y pm2 logs dice cual (sin mostrar valores).
 
 Revisar tambien config/circuit-access.yaml: define que circuitos ve
 cada rol y si tiene query_sql habilitado.
@@ -266,20 +282,143 @@ cada rol y si tiene query_sql habilitado.
 
 
 ---------------------------------------------------------------------
- 6. CREAR USUARIOS
+ 6. AUTH0, PANEL Y USUARIOS
 ---------------------------------------------------------------------
 
+La identidad (login) la maneja Auth0. El rol, el tenant, el flag de
+admin y el estado habilitado viven SOLO en data/users.yaml y se
+gestionan desde el panel. No se envian mails: no hace falta configurar
+ningun proveedor de email en Auth0.
+
+6.1 Configurar el tenant de Auth0 (una vez):
+
+[Auth0]
+  a) Applications > APIs > Create API "MCP Popey"
+       Identifier: https://<DOMINIO>/mcp        (= MCP_RESOURCE_URL)
+       Signing algorithm: RS256
+       Settings: Token Expiration 900, Allow Offline Access ON
+  b) Applications > APIs > Create API "MCP Popey Admin"
+       Identifier: https://<DOMINIO>/admin-api  (= ADMIN_API_AUDIENCE)
+       Settings: Token Expiration 900
+  c) Settings > Advanced:
+       Client ID Metadata Document Registration   ON
+       Dynamic Client Registration                OFF
+       Resource Parameter Compatibility Profile   ON
+       (opcional) RP-Initiated Logout End Session Endpoint Discovery ON,
+       para que "Cerrar sesion" del panel cierre tambien la sesion de
+       Auth0
+  d) Authentication > Database > Username-Password-Authentication:
+       Disable Sign Ups ON (nadie se registra solo)
+       Recuperacion de contrasena self-service OFF (opcion de conexion
+       forgot_password_enabled de New Universal Login): sin proveedor de
+       email no funciona; el camino es "Nuevo link" en el panel
+       Password Policy: Good o superior
+       Security > Attack Protection > Brute-force Protection ON
+  e) Applications > Create Application "MCP Popey Panel",
+     tipo Single Page Application:
+       Allowed Callback URLs:  https://<DOMINIO>/admin/
+       Allowed Logout URLs:    https://<DOMINIO>/admin/
+       Allowed Web Origins:    https://<DOMINIO>
+       Connections: solo Username-Password-Authentication
+     Copiar el Client ID (va en config.json del panel, 6.3).
+  f) Applications > Create Application "MCP Popey Server",
+     tipo Machine to Machine, autorizada para "Auth0 Management API"
+     SOLO con estos scopes:
+       read:users create:users update:users create:user_tickets
+       read:clients create:clients update:client_keys
+       read:client_grants create:client_grants delete:client_grants
+     Copiar Client ID y Client Secret a AUTH0_MGMT_CLIENT_ID y
+     AUTH0_MGMT_CLIENT_SECRET del .env. Es el secreto de mas valor
+     del sistema: no compartirlo y rotarlo si se filtra.
+  g) Clientes MCP (CIMD): cuando un cliente se conecta por primera vez,
+     registrar y aprobar la URL de su documento de metadata (ej. Codex:
+     https://chatgpt.com/oauth/codex/client.json) y habilitarle la
+     conexion Username-Password-Authentication.
+  h) n8n: si su credential no envia el Resource URL, configurar en
+     Settings > General > API Authorization Settings el Default
+     Audience = https://<DOMINIO>/mcp.
+
+6.2 Primer admin (sin mails ni links):
+
+El servidor NO crea al primer admin en Auth0: solo vincula a una
+persona que ya existe ahi, con su propia contrasena.
+
+[Auth0]
+  User Management > Users > Create User
+    Email:      <email del primer admin>
+    Password:   la elige esa misma persona
+    Connection: Username-Password-Authentication
+  (Disable Sign Ups no lo impide: solo bloquea el registro publico.)
+
+[VPS] en el .env:
+  BOOTSTRAP_ADMIN_EMAILS=<ese email>
+
+Al arrancar sin ningun admin habilitado, el servidor busca ese email en
+Auth0 y lo da de alta como admin (sin acceso al ERP por /mcp). Si el
+email no existe en Auth0 o Auth0 no responde, el MCP NO arranca y pm2
+logs dice por que. Cuando ya hay un admin, la variable se ignora: no
+revive admins dados de baja.
+
+Recomendacion: poner SOLO el propio email y dar de alta al resto de los
+admins desde el panel. Asi nadie elige la contrasena de otro. Quien
+tiene acceso al dashboard de Auth0 es, en la practica, superadmin.
+
+6.3 Publicar el panel:
+
+[VPS] (o en la PC y copiar el resultado)
+  cd /opt/mcp-popey/app/frontend
+  mcpnpm ci
+  mcpnpm exec ng build
+  mkdir -p /opt/mcp-popey/panel/admin
+  cp -r dist/frontend/browser/. /opt/mcp-popey/panel/admin/
+  cp public/config.example.json /opt/mcp-popey/panel/admin/config.json
+  nano /opt/mcp-popey/panel/admin/config.json
+      issuer:   https://<AUTH0_DOMAIN>/      (con la barra final)
+      clientId: el Client ID del paso 6.1 e)
+      audience: el valor de ADMIN_API_AUDIENCE
+
+config.json no tiene secretos (el panel es un cliente publico con
+PKCE). Esta fuera del build: un nuevo build no lo pisa si se copia
+solo dist/frontend/browser/.
+
+6.4 Dar de alta personas y procesos (desde https://<DOMINIO>/admin/):
+
+  Invitar persona: email, rol y tenant (o "sin acceso al MCP"), y
+  opcionalmente admin. El panel muestra UNA SOLA VEZ un link de Auth0
+  para que la persona elija su contrasena. Mandarlo por un canal
+  confiable (quien lo abre primero se queda con la cuenta). Vence a las
+  PASSWORD_LINK_TTL_SECONDS (24 h por defecto).
+
+  "Nuevo link": regenera el link. Es tambien el camino para
+  "olvide mi contrasena" (sin proveedor de email, el link de Auth0
+  de la pantalla de login no es confiable).
+
+  Cuenta de servicio (n8n): nombre, rol y tenant. El panel muestra UNA
+  SOLA VEZ el client id y el secreto. En n8n, credential
+  "MCP OAuth2 API":
+      Register Client Automatically: OFF
+      Grant Type:        Client Credentials
+      Access Token URL:  https://<AUTH0_DOMAIN>/oauth/token
+      Client ID / Secret: los del panel
+      Resource URL:      https://<DOMINIO>/mcp
+  "Rotar secreto" emite uno nuevo e invalida el anterior.
+
+  Editar: rol + tenant, admin y habilitado. Deshabilitar corta el
+  acceso al instante, aunque la persona tenga tokens vigentes. Siempre
+  tiene que quedar al menos un admin habilitado.
+
+6.5 Migrar desde la version con tokens estaticos (CLI de usuarios):
+
+  La CLI ya no existe y los tokens viejos dejan de funcionar. Con el
+  data/users.yaml anterior el MCP NO arranca (formato v1), a proposito:
+
 [VPS]
-  cd /opt/mcp-popey/app
-  /opt/mcp-popey/runtime/bin/node dist/cli/create-user.js \
-    --username juan --role administrador --database-key lang
+  mv /opt/mcp-popey/app/data/users.yaml /opt/mcp-popey/app/data/users.v1.yaml.bak
 
-El token se muestra UNA SOLA VEZ: copiarlo y guardarlo de forma segura.
-Se almacena hasheado en data/users.yaml. No hace falta reiniciar.
-
-Otras operaciones:
-  ... create-user.js --username juan --rotate     nuevo token
-  ... create-user.js --username juan --disable    deshabilitar
+  Despues: 6.2 (primer admin), arrancar, y dar de alta de nuevo a las
+  personas y a n8n desde el panel (6.4). En cada cliente, quitar el
+  header "Authorization: Bearer ..." fijo (ver 8.5).
+  Rollback: volver a la version anterior y restaurar el .bak.
 
 
 ---------------------------------------------------------------------
@@ -318,9 +457,11 @@ Otras operaciones:
 [VPS]
   curl -i http://127.0.0.1:3030/mcp
       -> HTTP/1.1 401 Unauthorized   (correcto: falta el token)
+         WWW-Authenticate: Bearer resource_metadata="https://<DOMINIO>/..."
 
   pm2 logs mcp-popey --lines 20
-      -> "mcp-popey listening on http://127.0.0.1:3030/mcp ..."
+      -> "mcp-popey listening on http://127.0.0.1:3030/mcp (... users,
+          issuer: https://<AUTH0_DOMAIN>/ ...)"
 
 
 ---------------------------------------------------------------------
@@ -358,14 +499,30 @@ Otras operaciones:
 [PC o cualquier maquina]
   curl -i https://<DOMINIO>/mcp
       -> HTTP/1.1 401 Unauthorized
+  curl -s https://<DOMINIO>/.well-known/oauth-protected-resource/mcp
+      -> {"resource":"https://<DOMINIO>/mcp","authorization_servers":[...]}
+  curl -i https://<DOMINIO>/admin/
+      -> HTTP/1.1 200 (el panel)
+  curl -i https://<DOMINIO>/admin/api/users
+      -> HTTP/1.1 401 Unauthorized
 
-8.5 Conectar un cliente (ej: Claude Code):
+8.5 Conectar un cliente: SIN header fijo. Con un header Authorization
+    fijo, el cliente no intenta OAuth. El cliente descubre Auth0 solo y
+    abre el login en el navegador.
 
-  claude mcp add --transport http popey https://<DOMINIO>/mcp \
-    --header "Authorization: Bearer <token>"
+  Claude Code:
+    claude mcp add --transport http popey https://<DOMINIO>/mcp
+    y dentro de Claude Code: /mcp -> popey -> Authenticate
+  Claude (web / Desktop): Settings > Connectors > Add custom connector,
+    URL https://<DOMINIO>/mcp
+  ChatGPT / Codex: agregar el servidor MCP con la misma URL.
+  n8n: ver 6.4.
+
+  Una persona sin rol/tenant o deshabilitada recibe 403 (Forbidden),
+  no un nuevo login.
 
 IMPORTANTE: nunca exponer el puerto 3030 en el firewall ni usar HTTP
-sin TLS: el token viaja en cada request.
+sin TLS: el access token viaja en cada request.
 
 
 ---------------------------------------------------------------------
@@ -423,6 +580,9 @@ Opcion A:
   mcpnpm prune --omit=dev
   pm2 restart mcp-popey
 
+  Si cambio el panel, repetir 6.3 sin pisar config.json
+  (solo cp -r dist/frontend/browser/. ...).
+
   Si se edito config/circuit-access.yaml en la VPS, git pull avisa del
   conflicto en vez de pisarlo.
 
@@ -430,7 +590,9 @@ Opcion B:
 
 [PC]
   git pull && npm ci && npm run build
-  tar -czf mcp-popey.tar.gz dist config scripts deploy package.json package-lock.json .env.example
+  (cd frontend && npm ci && npx ng build)
+  tar -czf mcp-popey.tar.gz dist config scripts deploy package.json package-lock.json .env.example \
+    frontend/dist/frontend/browser frontend/public/config.example.json
   scp mcp-popey.tar.gz root@<VPS_IP>:/tmp/
 
 [VPS]

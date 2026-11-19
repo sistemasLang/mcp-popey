@@ -4,8 +4,8 @@
  * no raw PostgreSQL text). Anything else is mapped to InternalError.
  */
 /**
- * PostgreSQL's own diagnosis of a statement written by the model (query_sql
- * only), so it can fix its SQL. Never set for connection or socket errors.
+ * PostgreSQL's own diagnosis of a statement written by the model (query_sql),
+ * so it can fix its SQL. Never set for connection or socket errors.
  */
 export interface SqlDiagnostics {
   sqlState: string;
@@ -37,14 +37,6 @@ export class CircuitNotFoundError extends AppError {
   readonly code = 'CIRCUIT_NOT_FOUND';
 }
 
-export class TableNotAllowedError extends AppError {
-  readonly code = 'TABLE_NOT_ALLOWED';
-}
-
-export class ColumnNotAllowedError extends AppError {
-  readonly code = 'COLUMN_NOT_ALLOWED';
-}
-
 export class InvalidQueryError extends AppError {
   readonly code = 'INVALID_QUERY';
 }
@@ -69,6 +61,33 @@ export class InternalError extends AppError {
   readonly code = 'INTERNAL_ERROR';
 }
 
+/** Valid token, but the identity has no access (unknown, disabled, no role, not admin). Always "Forbidden". */
+export class ForbiddenError extends AppError {
+  readonly code = 'FORBIDDEN';
+}
+
+/** Invalid user-administration input (HTTP 400). Subclasses narrow it to 404 / 409. */
 export class UserManagementError extends AppError {
-  readonly code = 'USER_MANAGEMENT_ERROR';
+  readonly code: string = 'USER_MANAGEMENT_ERROR';
+}
+
+export class UserNotFoundError extends UserManagementError {
+  override readonly code: string = 'USER_NOT_FOUND';
+}
+
+export type UserConflictCode = 'DUPLICATE_USER' | 'DUPLICATE_IDENTITY' | 'LAST_ADMIN' | 'USER_DISABLED';
+
+/** The request is valid but clashes with the current state (HTTP 409). */
+export class UserConflictError extends UserManagementError {
+  override readonly code: UserConflictCode;
+
+  constructor(code: UserConflictCode, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+/** The identity provider rejected or failed a call. Never carries its response body or credentials. */
+export class IdentityProviderError extends AppError {
+  readonly code = 'IDENTITY_PROVIDER_ERROR';
 }
