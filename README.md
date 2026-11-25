@@ -4,7 +4,7 @@ Servidor MCP (Node.js + TypeScript) para consultar el ERP Popey en **solo lectur
 aislado por **tenant**.
 
 ```
-La IA escribe el SQL. Node.js autentica y decide la base (UserContext).
+La IA escribe el SQL. Node.js autentica y decide la base (users.yaml).
 PostgreSQL garantiza que sea lectura y qué se puede leer (rol mcp_popey_ro).
 ```
 
@@ -30,8 +30,8 @@ error de validación. Ninguna tool escribe datos.
 - Sin token o con un token inválido: **401** con
   `WWW-Authenticate: Bearer resource_metadata=".../.well-known/oauth-protected-resource/mcp"`.
   Los clientes MCP descubren Auth0 desde ahí (RFC 9728) y abren el login solos.
-- Token válido pero sin acceso (identidad no dada de alta, deshabilitada o sin rol + tenant):
-  **403** `Forbidden`, el mismo mensaje en los tres casos.
+- Token válido pero sin acceso (identidad no dada de alta, deshabilitada, sin rol + tenant o
+  con un rol que no está en `circuit-access.yaml`): **403** `Forbidden`, el mismo mensaje siempre.
 - Identidad ≠ autorización: del token solo se toma `(iss, sub)`. El rol, el tenant
   (`databaseKey`), `admin` y `enabled` viven en `data/users.yaml` (formato v2). Ningún claim
   de Auth0 decide permisos. `enabled` se chequea en cada request.
@@ -41,22 +41,25 @@ error de validación. Ninguna tool escribe datos.
 
 ## Panel de administración
 
-`/admin/` (Angular, `frontend/`) y su API `/admin/api/*`, protegida con OAuth y una audiencia
-distinta (`ADMIN_API_AUDIENCE`): un token del panel no sirve en `/mcp` ni al revés. Solo para
-personas con `admin: true`.
+`/admin/` (Angular, `frontend/`) y su API `/admin/api/*` (`api/admin.ts`), protegida con OAuth
+y una audiencia distinta (`ADMIN_API_AUDIENCE`): un token del panel no sirve en `/mcp` ni al
+revés. Solo para personas habilitadas con `admin: true`.
 
 - **Invitar persona**: no se envía ningún mail. El panel muestra **una vez** un link de Auth0
   para que la persona elija su contraseña, y el admin se lo manda por el canal que elija.
   "Nuevo link" lo regenera (también sirve para "olvidé mi contraseña").
-- **Cuenta de servicio**: devuelve `clientId` y `clientSecret` **una vez**; el secreto nunca se
-  guarda en el servidor. Se puede rotar.
-- Editar rol + tenant, admin y habilitado. Deshabilitar corta el acceso al instante. Siempre
-  queda al menos un admin habilitado.
+- **Cuenta de servicio** (n8n): devuelve `clientId` y `clientSecret` **una vez**; el secreto
+  nunca se guarda en el servidor. Se puede rotar.
+- Editar rol + tenant, admin y habilitado. Deshabilitar corta el acceso en el siguiente
+  request, aunque el token siga vigente. Siempre queda al menos un admin habilitado.
 - **Primer admin**: se crea a mano en el dashboard de Auth0 (con su propia contraseña) y se
-  vincula al arrancar con `BOOTSTRAP_ADMIN_EMAILS`. El bootstrap solo corre si no hay ningún
-  admin habilitado y nunca crea usuarios en Auth0.
+  vincula al arrancar con `BOOTSTRAP_ADMIN_EMAILS`. Solo corre si no hay ningún admin
+  habilitado y nunca crea usuarios en Auth0.
 - Cada escritura queda en la auditoría (`type: "admin"`) con el actor, sin emails, subjects,
   secretos ni links.
+- El panel escribe `data/users.yaml`; también se puede editar a mano (formato en
+  `config/users.example.yaml`) y se relee solo cuando cambia. Si tiene un error de formato,
+  el servidor no arranca en lugar de dejar entrar a alguien por error.
 
 ### `query_sql`
 
@@ -76,42 +79,47 @@ personas con `admin: true`.
   puede leer: no hay límite de tablas por rol. Restringir algo se hace con grants en
   `scripts/create_readonly_role.sql`.
 
-## Arquitectura (puertos y adaptadores)
+## Código
 
 ```
 api/
-  domain/          reglas puras: errores, UserContext, catálogo de circuitos,
-                   límites. Sin dependencias externas.
-  application/
-    ports/inbound  AccessTokenVerifier
-    ports/outbound puertos: ReadOnlyDatabasePort, UserRepository, IdentityProviderPort,
-                   AuditLogger, RateLimiterPort, InternalErrorLogger
-    services/      AuthorizationService, CircuitPolicyService
-    use-cases/     AuthenticateUser, AdminUsers, BootstrapAdmins, ListCircuits,
-                   DescribeCircuit, QuerySql
-  adapters/
-    inbound/       http (JWT, metadata RFC 9728, API admin, Streamable HTTP), mcp (tools)
-    outbound/      postgres, yaml (circuits, roles, users v2), auth0 (Management API),
-                   audit, memory, logging
-  composition/     container.ts (cablea puertos ↔ adaptadores), bootstrap.ts (archivos + env)
-  config/          lectura y validación del entorno
-  index.ts         proceso del servidor (dist/index.js, lo corre pm2)
-frontend/          panel de administración (Angular), servido por nginx en /admin/
+  index.ts             arranque: lee .env y los YAML, arma la app, escucha, apaga limpio
+  config.ts            variables de entorno validadas + bases de cada tenant
+  http.ts              rutas: metadata OAuth, /mcp (401/403) y un servidor MCP por request
+  auth.ts              verificación del JWT (audiencia /mcp o admin) + quién puede entrar a cada una
+  users.ts             users.yaml: lectura (se relee si cambia) y escritura atómica
+  admin.ts             API del panel (/admin/api) con sus reglas, y el bootstrap del primer admin
+  auth0.ts             Auth0 Management API: crear personas, links, cuentas de servicio
+  circuits.ts          circuits.yaml + circuit-access.yaml → catálogo para la IA
+  db.ts                ejecución del SQL: READ ONLY, una sentencia, límite de filas, errores
+  audit.ts             una línea JSON por llamada a una tool y por escritura del panel
+  errors.ts            qué error ve el cliente y qué queda solo en el log
+  tools/
+    list-circuits.ts
+    describe-circuit.ts
+    query-sql.ts       (incluye el rate limit, que solo aplica a query_sql)
+    run-tool.ts        auditoría + manejo de errores, común a las tres tools
 ```
 
-Las dependencias apuntan hacia adentro: `domain` no importa nada externo y
-`application` solo `domain` y sus puertos. Solo el adapter `auth0` conoce a Auth0 y solo el
-verificador JWT importa `jose`: cambiar de IdP es reconfigurar y reescribir ese adapter.
-`test/unit/architecture.test.ts` lo verifica.
+Funciones y objetos planos, sin capas ni interfaces de una sola implementación. Los tests
+reemplazan piezas pasando otra cosa en el objeto `App` de `http.ts` (por ejemplo un `runSql`
+o un `auth0` falsos).
 
-## Flujo
+## Flujo de un request
 
 ```
-JWT de Auth0 → JwtAccessTokenVerifier (firma, iss, aud, exp) → (iss, sub)
-  → AuthenticateUserUseCase → UserRepository.findByIdentity → UserContext (server-side)
-query_sql → Zod ({ sql }) → QuerySqlUseCase: rol definido → RateLimiter
-  → ReadOnlyDatabasePort(UserContext.databaseKey) → PostgresDatabaseAdapter → Pool
-  → PostgreSQL (BEGIN READ ONLY … ROLLBACK, cursor: una sentencia, maxRows + 1, rol mcp_popey_ro)
+http.ts   Authorization: Bearer <JWT>
+auth.ts   → firma RS256 contra el JWKS de Auth0, iss, aud, exp → sub      (si no: 401)
+auth.ts   → users.yaml (iss, sub) → { id, role, databaseKey }               (si no: 403)
+http.ts   → servidor MCP atado a ese usuario → tools/*
+query-sql → Zod estricto ({ sql }) → rate limit → db.runSql(user.databaseKey, sql)
+db.ts     → BEGIN READ ONLY → cursor (una sentencia, maxRows + 1) → ROLLBACK, rol mcp_popey_ro
+run-tool  → auditoría (hash del SQL, nunca el texto) → resultado o error seguro
+
+/admin/api/*
+auth.ts   → JWT con audiencia ADMIN_API_AUDIENCE → persona habilitada con admin: true
+admin.ts  → body Zod estricto (≤ 16 KiB) → reglas → Auth0 primero, users.yaml después
+          → auditoría type "admin" → respuesta con Cache-Control: no-store
 ```
 
 ## Deploy (VPS con nginx + pm2)
@@ -131,14 +139,13 @@ qué tablas están confirmadas; no es un permiso (`query_sql` no lo consulta).
 - `pending_columns` → solo informativas.
 - La misma tabla en varios circuitos se evalúa **por circuito**; repetida dentro
   de un circuito se fusiona (si una entrada está restringida, gana la restricción).
-- Schema `seguridad` → documentado en el circuito `usuario` (id → nombre/rol). Sus columnas sensibles (password, hashes, 2FA, bloqueo, fecha de nacimiento) no figuran en `key_columns` y el rol `mcp_popey_ro` solo tiene `SELECT` por columna sobre las seguras: esa es la barrera real. `BLOCKED_SCHEMAS` queda vacío, pero el mecanismo sigue activo.
+- Schema `seguridad` → documentado en el circuito `usuario` (id → nombre/rol). Sus columnas sensibles (password, hashes, 2FA, bloqueo, fecha de nacimiento) no figuran en `key_columns` y el rol `mcp_popey_ro` solo tiene `SELECT` por columna sobre las seguras: esa es la barrera real.
 - Un YAML estructuralmente inválido impide arrancar.
 
 ## Permisos por rol
 
 `config/circuit-access.yaml` define los roles y qué circuitos ve cada uno en el catálogo.
-Todo rol definido ahí puede usar `query_sql`; uno que no figura no accede a nada, y el panel
-solo asigna roles definidos. Hoy no hay límite de tablas por rol. Formato en
+Todo rol definido ahí puede usar `query_sql`; un usuario con un rol que no figura recibe 403. Hoy no hay límite de tablas por rol. Formato en
 `config/circuit-access.example.yaml`.
 
 ## Uso
@@ -166,8 +173,8 @@ Variables de Auth0 (obligatorias salvo indicación):
 | `BOOTSTRAP_ADMIN_EMAILS` | Opcional: emails (ya creados en Auth0) a vincular como admins en el primer arranque |
 | `PASSWORD_LINK_TTL_SECONDS` | Opcional, default 86400 (300 a 604800): vida del link para elegir contraseña |
 
-Si falta una variable, `users.yaml` está en el formato viejo (v1, con tokens) o Auth0 no
-responde durante el bootstrap, el servidor no arranca.
+Si falta una variable, algún YAML es inválido o Auth0 no responde durante el bootstrap, el
+servidor no arranca.
 
 Conectarlo a Claude Code (sin header fijo: el cliente negocia OAuth solo):
 
